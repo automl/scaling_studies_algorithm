@@ -1,0 +1,5 @@
+.venv/
+dep/
+pipeline.ipynb
+nats.py
+*/__pycache__
