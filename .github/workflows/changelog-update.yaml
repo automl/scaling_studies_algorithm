@@ -18,4 +18,3 @@ jobs:
           # Disable version bumping, tagging, and GitHub releases
           skip-github-release: true
           skip-tag: true
-          extra-files: "[]"
