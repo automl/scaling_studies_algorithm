@@ -32,7 +32,6 @@ def calculate_metrics(config):
     model and training configuration.
     """
     
-    
     L = config['num_layers']
     d_model = config['hidden_size']
     V = config['vocab_size']
