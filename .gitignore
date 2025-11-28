@@ -1,5 +1,6 @@
+__pycache__
 .venv/
 dep/
 pipeline.ipynb
 nats.py
-*/__pycache__
+src/benchmarks/test.ipynb

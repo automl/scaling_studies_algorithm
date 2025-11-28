@@ -23,8 +23,8 @@ class BenchmarkConfig:
 def get_param_count(d_model, vocab_size, num_layers):
     return (12 * num_layers * d_model**2) + (vocab_size * d_model)
 
-def get_total_flops(params, total_tokens_processed):
-    total_flops_consumed = 6 * params * total_tokens_processed
+def get_total_flops(total_num_params, total_tokens_processed):
+    total_flops_consumed = 6 * total_num_params * total_tokens_processed
     return total_flops_consumed
 def calculate_metrics(config):
     """
@@ -32,33 +32,30 @@ def calculate_metrics(config):
     model and training configuration.
     """
     
-    sp = config['scaling_params']
-    hp = config['regular_hyperparams']
     
-    L = sp['num_layers']
-    d_model = sp['hidden_size']
-    V = sp['vocab_size']
-    seq_len = sp['seq_len']
+    L = config['num_layers']
+    d_model = config['hidden_size']
+    V = config['vocab_size']
+    seq_len = config['seq_len']
     
-    lr = hp['learning_rate']
-    global_batch_size = hp['global_batch_size']
-    num_training_steps = hp['num_training_steps']
+    lr = config['learning_rate']
+    global_batch_size = config['global_batch_size']
+    num_training_steps = config['num_training_steps']
     
-   
-    params = get_param_count(d_model, V, L)
+    total_num_params = get_param_count(d_model, V, L)
     
     # cost_flops_per_seq = 6 * params * seq_len # 6 N * seq_len
     total_tokens_processed = global_batch_size * num_training_steps * seq_len
 
     total_flops_consumed = get_total_flops(
-        params, total_tokens_processed)
+        total_num_params, total_tokens_processed)
 
     
     E = 1.7 # Simulate data noise
     # A / (N^a)
     A = 500 
     alpha = 0.09
-    model_loss_term = A / (params**alpha)
+    model_loss_term = A / (total_num_params**alpha)
     
     # B / (D^b)
     B = 800
@@ -74,7 +71,7 @@ def calculate_metrics(config):
     final_loss = (E + model_loss_term + data_loss_term) * lr_penalty
     
     return {
-        "params": params,
+        "params": total_num_params,
         # "cost_flops_per_seq": cost_flops_per_seq,
         "total_flops_consumed": total_flops_consumed,
         "loss": final_loss
@@ -137,8 +134,6 @@ benchmark_data = [
         description="Medium Model (Bigger Batch)"
     )
 ]
-
-
 
 print("--- Mock LLM Benchmark Results ---")
 for i, config in enumerate(benchmark_data):
