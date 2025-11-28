@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+      - benchmark
+  pull_request:
+    branches:
+      - benchmark
 
 jobs:
   release-please:
