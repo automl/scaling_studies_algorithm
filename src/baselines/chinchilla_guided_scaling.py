@@ -62,6 +62,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 seen_datapoints_estimator,
                 aspect_ratio_fn,
                 max_evaluation_flops,
+                evaluate_pipeline,
                 data_parameter_name,
                 strategy: Literal["approach1", "approach2", "gemstones"] = "gemstones"
                 ) -> None:
@@ -72,6 +73,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         self._best_loss: float | None = None
 
         self.params_estimator = params_estimator
+        self.evaluate_pipeline = evaluate_pipeline
         self.seen_datapoints_estimator = seen_datapoints_estimator
         self.flops_estimator = flops_estimator
         self.aspect_ratio_fn = aspect_ratio_fn
@@ -626,59 +628,13 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         trials: Mapping[str, Trial],
         target_flops: float
     ) -> tuple[float, float, float] | None:
-        """Find optimal parameter count N for given target FLOP budget using Pareto front slope.
+        """Find optimal parameter count N for given target FLOP budget using all_possible_model_configs.
         
         Returns:
             Tuple of (optimal_n, slope, intercept) or None if extrapolation fails
         """
         try:
-            # Get Pareto front to find N vs FLOPS slope
-            use_lc_aware = self.strategy in ["approach1", "gemstones"]
-            use_pareto_fit = self.strategy in ["approach1", "approach2"]
-            fit_func = fit_pareto_front_loglog if use_pareto_fit else fit_convex_hull_loglog
-            result = fit_func(trials, lc_aware=use_lc_aware)
-            actual_flops = [r[3] for r in result[5]]
-            actual_params = [r[0] for r in result[5]]
-            fitted_flops_params = self._fit_loglog_line(actual_flops, actual_params)
-            
-            if fitted_flops_params is None:
-                logger.warning("Could not extract slope/intercept from Pareto front")
-                return None
-            fitted_ys, slope, intercept = fitted_flops_params
-            
-            logger.info(f"Extracted slope={slope:.4f}, intercept={intercept:.4f} from Pareto front (N vs FLOPs in log-log)")
-            
-            # Extrapolate to find required N for target_flops
-            target_n = np.exp(slope * np.log(target_flops) + intercept)
-            logger.info(f"For target_flops={target_flops:.2e}, estimated target N={target_n:.2e}")
-            
-            # Find closest N in all_possible_model_configs
-            available_ns = list(all_possible_model_configs.keys())
-            if not available_ns:
-                logger.warning("No available N values in all_possible_model_configs")
-                return None
-            
-            closest_n = min(available_ns, key=lambda n: abs(n - target_n))
-            logger.info(f"Selected nearest available N={closest_n:.2e} (target was {target_n:.2e})")
-            
-            return closest_n, slope, intercept
-            
-        except Exception as e:
-            logger.error(f"Error in _find_optimal_n_for_flops: {e}")
-            return None
-
-    def _find_optimal_n_using_parametric_loss(
-        self,
-        all_possible_model_configs: dict,
-        target_flops: float
-    ) -> tuple[float, float, float] | None:
-        """Find optimal parameter count N using actual FLOPS-to-params fit from Pareto front.
-        
-        Returns:
-            Tuple of (optimal_n, slope, intercept) or None if extrapolation fails
-        """
-        try:
-            # Collect (N, FLOPS) pairs from all_possible_model_configs (Pareto front)
+            # Collect (N, FLOPS) pairs from all_possible_model_configs for robust estimation
             ns_list = []
             flops_list = []
             
@@ -715,7 +671,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 return None
             fitted_ys, slope, intercept = fitted_flops_params
             
-            logger.info(f"Extracted slope={slope:.4f}, intercept={intercept:.4f} from Pareto front (N vs FLOPs in log-log)")
+            logger.info(f"Extracted slope={slope:.4f}, intercept={intercept:.4f} from all_possible_model_configs (N vs FLOPs in log-log)")
             
             # Extrapolate to find required N for target_flops
             target_n = np.exp(slope * np.log(target_flops) + intercept)
@@ -730,7 +686,89 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             closest_n = min(available_ns, key=lambda n: abs(n - target_n))
             logger.info(f"Selected nearest available N={closest_n:.2e} (target was {target_n:.2e})")
             
-            return closest_n, slope, intercept
+            return float(closest_n), float(slope), float(intercept)
+            
+        except Exception as e:
+            logger.error(f"Error in _find_optimal_n_for_flops: {e}")
+            return None
+
+    def _find_optimal_n_using_parametric_loss(
+        self,
+        all_possible_model_configs: dict,
+        target_flops: float
+    ) -> tuple[float, float, float] | None:
+        """Find optimal parameter count N using scaling law slope beta/(beta+alpha) to fit FLOPS vs params.
+        
+        Returns:
+            Tuple of (optimal_n, slope, intercept) or None if extrapolation fails
+        """
+        try:
+            # Ensure scaling law parameters are fitted
+            if self._scaling_law_params is None:
+                logger.warning("Scaling law parameters not fitted, cannot use parametric loss method")
+                return None
+            
+            # Compute slope from scaling law: beta / (beta + alpha)
+            slope = self._scaling_law_params.beta / (self._scaling_law_params.beta + self._scaling_law_params.alpha)
+            logger.info(f"Using parametric loss slope from scaling law: {slope:.4f} = {self._scaling_law_params.beta:.4f} / ({self._scaling_law_params.beta:.4f} + {self._scaling_law_params.alpha:.4f})")
+            
+            # Collect (N, FLOPS) pairs from all_possible_model_configs
+            ns_list = []
+            flops_list = []
+            
+            for n_val, model_configs in all_possible_model_configs.items():
+                if not model_configs:
+                    continue
+                
+                # Use first model config as representative
+                model_config_tuple = model_configs[0]
+                model_config = dict(model_config_tuple)
+                
+                # Estimate FLOPS with a representative data parameter value
+                data_param = self.space.searchables[self.data_parameter_name]
+                data_val_mid = (data_param.domain.lower + data_param.domain.upper) / 2
+                model_config[self.data_parameter_name] = data_val_mid
+                model_config.update(self.space.constants)
+                
+                try:
+                    estimated_flops = self.flops_estimator(**model_config)
+                    ns_list.append(n_val)
+                    flops_list.append(estimated_flops)
+                except Exception as e:
+                    logger.debug(f"Could not estimate FLOPS for N={n_val}: {e}")
+                    continue
+            
+            if len(ns_list) < 2:
+                logger.warning("Not enough N/FLOPS pairs for fitting")
+                return None
+            
+            # Fit intercept in log-log space: log(N) = slope * log(FLOPS) + intercept
+            # Given fixed slope, compute intercept as mean residual
+            log_ns = np.log(np.array(ns_list))
+            log_flops = np.log(np.array(flops_list))
+            
+            if not (np.all(np.isfinite(log_ns)) and np.all(np.isfinite(log_flops))):
+                logger.warning("Invalid log values in FLOPS/params data")
+                return None
+            
+            # Compute intercept: intercept = mean(log(N) - slope * log(FLOPS))
+            intercept = np.mean(log_ns - slope * log_flops)
+            logger.info(f"Fitted intercept={intercept:.4f} (fixed slope={slope:.4f})")
+            
+            # Extrapolate to find required N for target_flops
+            target_n = np.exp(slope * np.log(target_flops) + intercept)
+            logger.info(f"For target_flops={target_flops:.2e}, estimated target N={target_n:.2e}")
+            
+            # Find closest N in all_possible_model_configs
+            available_ns = list(all_possible_model_configs.keys())
+            if not available_ns:
+                logger.warning("No available N values in all_possible_model_configs")
+                return None
+            
+            closest_n = min(available_ns, key=lambda n: abs(n - target_n))
+            logger.info(f"Selected nearest available N={closest_n:.2e} (target was {target_n:.2e})")
+            
+            return float(closest_n), float(slope), float(intercept)
             
         except Exception as e:
             logger.error(f"Error in _find_optimal_n_using_parametric_loss: {e}")
@@ -742,7 +780,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         all_possible_model_configs: dict,
         max_target_flops: float
     ) -> tuple[dict[str, Any], float, float | None, float | None] | None:
-        """Grid over data parameter for a given optimal N and find best config within budget.
+        """Grid over data parameter for a given optimal N and find config closest to target FLOPS.
         
         Returns:
             Tuple of (best config dict, predicted loss, slope_loss, intercept_loss) or None if no valid config found
@@ -759,9 +797,9 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             model_config = dict(model_config_tuple)
             logger.info(f"Using model config for N={optimal_n}: {model_config}")
             
-            # Create fine-grained grid for data parameter with 100 points
+            # Create fine-grained grid for data parameter with 1000 points
             data_param = self.space.searchables[self.data_parameter_name]
-            data_grid = torch.linspace(0, 1, steps=100)
+            data_grid = torch.linspace(0, 1, steps=1000)
             data_grid_values = data_param.domain.cast(data_grid, frm=NepsDomain.unit_float()).tolist()
             
             # Ensure scaling law parameters are fitted
@@ -769,11 +807,10 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 logger.warning("Scaling law parameters not fitted")
                 return None
             
-            # Evaluate all configs with this model and varying data parameter
+            # Find data value that gets closest to max_target_flops (without exceeding)
             best_config = None
-            best_loss = float("inf")
-            all_valid_flops = []
-            all_valid_losses = []
+            best_flops_diff = float("inf")
+            best_estimated_flops = None
             
             for data_val in data_grid_values:
                 conf = model_config.copy()
@@ -790,42 +827,36 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 if estimated_flops > max_target_flops:
                     continue
                 
-                # Estimate loss using scaling law
-                try:
-                    n = self.params_estimator(**conf)
-                    d = self.seen_datapoints_estimator(**conf)
-                except Exception as e:
-                    logger.debug(f"Could not estimate params/datapoints: {e}")
-                    continue
-                
-                estimated_loss = (
-                    self._scaling_law_params.E +
-                    self._scaling_law_params.A / (n ** self._scaling_law_params.alpha) +
-                    self._scaling_law_params.B / (d ** self._scaling_law_params.beta)
-                )
-                
-                all_valid_flops.append(estimated_flops)
-                all_valid_losses.append(estimated_loss)
-                
-                if estimated_loss < best_loss:
-                    best_loss = estimated_loss
+                # Find closest to target without exceeding
+                flops_diff = max_target_flops - estimated_flops
+                if flops_diff < best_flops_diff:
+                    best_flops_diff = flops_diff
                     best_config = conf
+                    best_estimated_flops = estimated_flops
             
             if best_config is None:
                 logger.warning(f"Could not find valid config within FLOP budget {max_target_flops:.2e}")
                 return None
             
-            # Fit FLOPS vs Loss for this N
-            slope_loss = None
-            intercept_loss = None
-            if all_valid_flops and all_valid_losses:
-                fit_result = self._fit_loglog_line(all_valid_flops, all_valid_losses)
-                if fit_result is not None:
-                    _, slope_loss, intercept_loss = fit_result
-                    logger.debug(f"Fitted loss: slope={slope_loss:.4f}, intercept={intercept_loss:.4f}")
+            # Estimate loss using scaling law for the selected config
+            try:
+                n = self.params_estimator(**best_config)
+                d = self.seen_datapoints_estimator(**best_config)
+            except Exception as e:
+                logger.debug(f"Could not estimate params/datapoints: {e}")
+                return None
             
-            logger.info(f"Best config for max_target_flops={max_target_flops} N={optimal_n}: loss={best_loss:.6f}, flops={self.flops_estimator(**best_config):.2e}")
-            return best_config, best_loss, slope_loss, intercept_loss
+            best_loss = (
+                self._scaling_law_params.E +
+                self._scaling_law_params.A / (n ** self._scaling_law_params.alpha) +
+                self._scaling_law_params.B / (d ** self._scaling_law_params.beta)
+            )
+            
+            logger.info(f"Selected config for max_target_flops={max_target_flops:.2e} N={optimal_n}: "
+                       f"actual_flops={best_estimated_flops:.2e}, loss={best_loss:.6f}")
+            
+            # Return None for slope/intercept since we're using a single point, not fitting
+            return best_config, best_loss, None, None
             
         except Exception as e:
             logger.error(f"Error in _grid_over_data_for_optimal_n: {e}")
@@ -1682,6 +1713,7 @@ def chinchilla_guided_scaling(
     seen_datapoints_estimator: Callable[..., int],
     flops_estimator: Callable[..., int],
     aspect_ratio_fn: Callable[..., float],
+    evaluate_pipeline: Callable[..., Any],
     max_evaluation_flops: int,
     strategy: Literal["approach1", "approach2", "gemstones"] = "gemstones",
 ) -> CustomOptimizer:
@@ -1693,6 +1725,7 @@ def chinchilla_guided_scaling(
         seen_datapoints_estimator=seen_datapoints_estimator,
         aspect_ratio_fn=aspect_ratio_fn,
         max_evaluation_flops=max_evaluation_flops,
+        evaluate_pipeline=evaluate_pipeline,
         data_parameter_name=data_parameter_name,
         strategy=strategy,
     ))

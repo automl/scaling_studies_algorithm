@@ -50,6 +50,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
         
             case OptimizerEnum.CHINCHILLA_APPROACH1:
                 return chinchilla_guided_scaling(
+                    evaluate_pipeline=evaluate_pipeline,
                     params_estimator=param_estimator,
                     seen_datapoints_estimator=seen_datapoints_estimator,
                     flops_estimator=flops_estimator,
@@ -61,6 +62,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
         
             case OptimizerEnum.CHINCHILLA_APPROACH2: 
                 return chinchilla_guided_scaling(
+                    evaluate_pipeline=evaluate_pipeline,
                     params_estimator=param_estimator,
                     seen_datapoints_estimator=seen_datapoints_estimator,
                     flops_estimator=flops_estimator,
@@ -72,6 +74,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
         
             case OptimizerEnum.CHINCHILLA_GEMSTONES: 
                 return chinchilla_guided_scaling(
+                    evaluate_pipeline=evaluate_pipeline,
                     params_estimator=param_estimator,
                     seen_datapoints_estimator=seen_datapoints_estimator,
                     flops_estimator=flops_estimator,
