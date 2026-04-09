@@ -4,3 +4,8 @@ dep/
 pipeline.ipynb
 nats.py
 src/benchmarks/test.ipynb
+
+.vscode/
+data/
+results*/
+results/

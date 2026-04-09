@@ -1,0 +1,3 @@
+[submodule "/home/alipourn/scaling_studies_algorithm/neps"]
+	path = /home/alipourn/scaling_studies_algorithm/neps
+	url = https://github.com/automl/neps
