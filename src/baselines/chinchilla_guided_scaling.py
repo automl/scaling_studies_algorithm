@@ -1,34 +1,27 @@
 from __future__ import annotations
 
-from collections import defaultdict
-import copy
 import math
-
 import torch
 import itertools
-from collections.abc import (
-    Mapping,
-    Sequence,
-)
 from dataclasses import dataclass
-
 import logging
 from typing import (
     TYPE_CHECKING,
     Any, Literal
 )
+from collections import OrderedDict, defaultdict
 from collections.abc import Callable, Mapping, Sequence
-
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.colors import LogNorm
 import numpy as np
 from scipy.optimize import minimize
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from src.baselines.utils.utils import _create_scaling_plot
 
-
-import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
 from neps.state import BudgetInfo, Trial
 from neps.optimizers.optimizer import Artifact, ArtifactType
-from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer, fit_convex_hull_loglog, fit_pareto_front_loglog
+from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer, fit_convex_hull_loglog, fit_pareto_front_loglog, _fit_loglog_line
 from neps.optimizers.grid_search import GridSearch
 from neps.optimizers.optimizer import ImportedConfig, AskFunction
 from neps.optimizers.algorithms import custom, CustomOptimizer
@@ -45,7 +38,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ScalingLawParameters:
-    """Fitted scaling law parameters: L = E + A/N^α + B/D^β"""
     E: float
     A: float
     B: float
@@ -53,7 +45,9 @@ class ScalingLawParameters:
     beta: float
 
 class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
-    """The Multi objective algorithm for search space including architectural choices."""
+    # Class attributes
+    target_over_spent_flops_ratios = np.array([0.01, 0.02, 0.1, 0.2, 0.3, 0.4, 0.5, 1.5, 2.0, 3.0])
+    spent_over_max_flops_ratios = [(0.015, 0.005), (0.09, 0.11), (0.45, 0.55), (0.95, 1.05), (1.45, 1.55), (1.95, 2.05)]
 
     def __init__(self,
                 space,
@@ -64,7 +58,8 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 max_evaluation_flops,
                 evaluate_pipeline,
                 data_parameter_name,
-                strategy: Literal["approach1", "approach2", "gemstones"] = "gemstones"
+                strategy: Literal["approach1", "approach2", "gemstones"] = "gemstones",
+                use_priors: bool = False
                 ) -> None:
         
         
@@ -80,16 +75,11 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         self.space = space
         self.data_parameter_name = data_parameter_name
         self.strategy = strategy
-        if self.strategy == "approach2":
-            self.iso_flops = self._generate_iso_flop_list()
-            logger.info(f"Generated {len(self.iso_flops)} ISO-FLOP values: {[f'{f:.2e}' for f in self.iso_flops]}... (total: {sum(self.iso_flops):.2e})")
-        
+        self.use_priors = use_priors        
         self.min_flops, self.max_flops = self.find_flops_bounds()
-        
-        self.target_over_spent_flops_ratios = np.arange(0.1, 2.1, 0.1)
 
         self.max_evaluation_flops = max_evaluation_flops
-        
+        self._artifacts: list[Artifact] = []
 
         match self.strategy:
             case "approach1":
@@ -101,11 +91,34 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
 
         self.all_possible_model_configs = selected_model_configs
         self.config_list = config_list
-        print(f"config list {config_list}, total number {len(config_list)}")
         self.base_optimizer = GridSearch( #type: ignore
             configs_list=config_list,
         )
+        estimated_flops = sum([self.flops_estimator(**config) for config in config_list])
+        print(f" estimated_flops {estimated_flops} evaluations {self.max_evaluation_flops} max_flops {self.max_flops}")
     
+    def get_all_possible_model_configs(self, non_scaling_params) -> defaultdict[int, list[tuple]]:
+        parameters = self.space.searchables
+        data_param_lower = parameters[self.data_parameter_name].domain.lower
+        model_params_grid = {
+            param_name: sorted(torch.unique(
+                param.domain.cast(
+                    torch.linspace(0, 1, steps=30), frm=NepsDomain.unit_float()
+                )
+            ).tolist())
+            for param_name, param in parameters.items() 
+            if getattr(param, "is_scaling", False) and param_name != self.data_parameter_name
+        }
+        attempted_model_configs = defaultdict(list)
+        for indices in itertools.product(*[range(len(grid)) for grid in model_params_grid.values()]):
+            conf1 = {param_name: model_params_grid[param_name][idx] 
+                    for param_name, idx in zip(model_params_grid.keys(), indices)}
+            conf1.update({**non_scaling_params ,self.data_parameter_name: data_param_lower})
+            model_key = tuple(sorted((k, v) for k, v in conf1.items() if k != self.data_parameter_name))
+            n_params_updated = self.params_estimator(**conf1)
+            attempted_model_configs[n_params_updated].append(model_key)
+        return attempted_model_configs
+        
     def find_flops_bounds(self) -> tuple[float, float]:
         conf_max = {param_name: param.domain.upper for param_name, param in self.space.searchables.items()}
         conf_min = {param_name: param.domain.lower for param_name, param in self.space.searchables.items()}
@@ -157,7 +170,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         model_params_grid = {
             param_name: sorted(torch.unique(
                 param.domain.cast(
-                    torch.linspace(0, 1, steps=10), frm=NepsDomain.unit_float()
+                    torch.linspace(0, 1, steps=30), frm=NepsDomain.unit_float()
                 )
             ).tolist())
             for param_name, param in parameters.items() 
@@ -244,7 +257,6 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             current_config = config_list[-1].copy()
             current_config[param_name] = model_params_grid[param_name][next_idx]
             
-            # Track this model parameter combination (regardless of whether data fits budget)
             model_key = tuple(sorted((k, v) for k, v in current_config.items() if k != self.data_parameter_name))
             
             # Recompute dynamic data grid for updated scaling parameters
@@ -276,17 +288,22 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         
         # model params + non scaling params (exclude data param)
         logger.info(f"Selected {len(config_list)} unique model configs for approach1 (including those exceeding FLOP budget)")
-        
+        attempted_model_configs = self.get_all_possible_model_configs(non_scaling_params)
         return config_list, attempted_model_configs
     
     def approach2_generate_config_list(self, num_candidate_per_iso_flop: int = 5) -> tuple[list[dict[str, Any]], defaultdict[int, list[tuple]]]:
+
+        iso_flops = self._generate_iso_flop_list()
+        logger.info(f"Generated {len(iso_flops)} ISO-FLOP values: {[f'{f:.2e}' for f in iso_flops]}... (total: {sum(iso_flops):.2e})")
+        
+
         parameters = self.space.searchables
         non_scaling_params = self.sample_value_for_parameters(param_types="non-scaling")
         
         scaling_non_data_grid = {
             param_name: torch.unique(
                 param.domain.cast(
-                    torch.linspace(0, 1, steps=10), frm=NepsDomain.unit_float()
+                    torch.linspace(0, 1, steps=30), frm=NepsDomain.unit_float()
                 )
             ).tolist() 
             for param_name, param in parameters.items() 
@@ -295,7 +312,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         
         data_grid = sorted(torch.unique(
             parameters[self.data_parameter_name].domain.cast(
-                torch.linspace(0, 1, steps=1000), frm=NepsDomain.unit_float()
+                torch.linspace(0, 1, steps=100000), frm=NepsDomain.unit_float()
             )
         ).tolist())
         
@@ -317,19 +334,14 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             for conf in configs
         ])
         
-        # Track all selected model parameter combinations
         selected_model_configs = defaultdict(list)
         initial_non_data_conf = {**conf_scaling, **non_scaling_params}
         initial_model_key = tuple(sorted((k, v) for k, v in initial_non_data_conf.items()))
-        initial_param_count = self.params_estimator(**initial_non_data_conf | {self.data_parameter_name: data_grid[0]})  # Ensure initial config is valid for params estimator
+        initial_param_count = self.params_estimator(**initial_non_data_conf | {self.data_parameter_name: data_grid[0]})
         selected_model_configs[initial_param_count].append(initial_model_key)
         
-        retry_counter = 0
         while used_flops < self.max_evaluation_flops and len(exhausted_dims) < len(param_names):
-            if retry_counter >= 50:
-                logger.info("Retry limit reached")
-                break
-            
+
             action = self._choose_action_with_sobol(action_probabilities, action_count)
             action_count += 1
             
@@ -360,16 +372,19 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             selected_model_configs[conf_parameter_count].append(model_key)
             replace = False
             added = False
+            param_chosen_iso_flops = []
             for data_val in data_grid:
                 config = {**conf_scaling, **non_scaling_params, self.data_parameter_name: data_val}
                 conf = config.copy()
                 estimated_flops = self.flops_estimator(**conf)
-                available_brackets = [flops for flops in self.iso_flops if len(configs_per_iso_flop[flops]) <= num_candidate_per_iso_flop]
+                available_brackets = [flops for flops in iso_flops if len(configs_per_iso_flop[flops]) <= num_candidate_per_iso_flop]
                 if not available_brackets:
                     logger.info(f"No available ISO-FLOP brackets for config {conf} with estimated FLOPs {estimated_flops:.2e}. Skipping.")
                     replace = True
-                closest_flop_bin, ratio = self._get_closest_iso_flop(estimated_flops, available_brackets or self.iso_flops)
-                if ratio > 1.1 or ratio < 0.9:
+                closest_flop_bin, ratio = self._get_closest_iso_flop(estimated_flops, available_brackets or iso_flops)
+                if ratio > 1.3 or ratio < 0.7:
+                    continue
+                if closest_flop_bin in param_chosen_iso_flops:
                     continue
                 if replace:
                     logger.info(f"Replacing config in ISO-FLOP bin {closest_flop_bin:.2e} with config {conf} "
@@ -380,20 +395,15 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                     if used_flops - removed_flops + estimated_flops <= self.max_evaluation_flops:
                         configs_per_iso_flop[closest_flop_bin].pop(0)
                         configs_per_iso_flop[closest_flop_bin].append(conf)
+                        param_chosen_iso_flops.append(closest_flop_bin)
                         used_flops += estimated_flops - removed_flops
                     continue
                 if used_flops + estimated_flops > self.max_evaluation_flops:
                     continue
                 configs_per_iso_flop[closest_flop_bin].append(conf)
+                param_chosen_iso_flops.append(closest_flop_bin)
                 used_flops += estimated_flops
-                added = True
-            
-            if not added:
-                retry_counter += 1
-            else:
-                retry_counter = 0
         
-        print(f"configs_per_iso_flop {configs_per_iso_flop}")
         config_list = [
             conf 
             for configs in configs_per_iso_flop.values() 
@@ -404,21 +414,10 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                    f"total FLOPs: {used_flops:.2e} / {self.max_evaluation_flops:.2e}")
         
         logger.info(f"Selected {len(config_list)} unique model configs for approach2")
-        
+        selected_model_configs = self.get_all_possible_model_configs(non_scaling_params)
         return config_list, selected_model_configs
 
     def gemstones_generate_config_list(self):
-        """Generate configs using parameter binning with aspect ratio sorting.
-        
-        Strategy:
-        1. Create parameter bins from all possible configurations
-        2. Select 5 parameter bins with ±5% threshold
-        3. For top 5 most populated bins, iteratively select configs
-        4. Sort configs by aspect ratio and select 3 strategic indices:
-           - (first+middle)/2: between start and middle
-           - middle: center point
-           - (middle+end)/2: between middle and end
-        """
         parameters = self.space.searchables
         non_scaling_params = self.sample_value_for_parameters(param_types="non-scaling")
         steps = 30
@@ -463,7 +462,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         
         # Create 5 uniform bins
         min_n, max_n = min(n_param_values), max(n_param_values)
-        param_bins = np.linspace(min_n, max_n, num=10)
+        param_bins = np.linspace(min_n, max_n, num=100)
         threshold = 0.15  # ±10% threshold
         
         # Group configurations into bins with ±10% threshold
@@ -544,8 +543,6 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                     logger.info(f"Reached FLOPS budget limit. Used: {used_flops:.2e}/{self.max_evaluation_flops:.2e}")
                     continue
                 
-                
-                
                 conf_list.append(conf)
                 used_flops += estimated_flops
                 logger.debug(f"Added config from bin {bin_idx} (aspect_ratio={self.aspect_ratio_fn(**conf):.3f}). Total FLOPs: {used_flops:.2e}")
@@ -554,27 +551,17 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         logger.info(f"Selected {len(selected_model_configs)} unique model configs for gemstones")
         
         logger.info(f"Generated {len(conf_list)} configs. Total FLOPs used: {used_flops:.2e}/{self.max_evaluation_flops:.2e}")
+        selected_model_configs = self.get_all_possible_model_configs(non_scaling_params)
         return conf_list, selected_model_configs
     
-
-        
     def _get_closest_iso_flop(self, estimated_flops: float, iso_flops: list[float]) -> tuple[float, float]:
         closest = min(iso_flops, key=lambda x: abs(x - estimated_flops))
         return closest, closest / estimated_flops
 
     def _generate_iso_flop_list(self, num_steps: int = 10) -> list[float]:
         # assume that all the HPs are increasing, the other solution could be to get all possible grids and calc the flops for alll and get min and max there.
-        
-        min_flops_conf, max_flops_conf = {}, {}
-        for param_name, param in self.space.searchables.items():
-            min_flops_conf[param_name] = param.domain.lower
-        
-        for param_name, param in self.space.searchables.items():
-            max_flops_conf[param_name] = param.domain.upper
-        min_flops = self.flops_estimator(**min_flops_conf)
-        max_flops = self.flops_estimator(**max_flops_conf)
-        return torch.logspace(math.log10(min_flops), math.log10(max_flops), steps=num_steps).tolist()
-    
+ 
+        return torch.logspace(math.log10(self.min_flops * 2), math.log10(self.max_flops), steps=num_steps).tolist()
 
     def _choose_action_with_sobol(self, action_probabilities: torch.Tensor, iteration_count: int) -> int:
         sobol_sampler = Sampler.sobol(ndim=1, scramble=False)
@@ -596,7 +583,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         for param_name, param in self.space.searchables.items():
             if (param_types == "scaling" and not getattr(param, "is_scaling", False)) or (param_types == "non-scaling" and getattr(param, "is_scaling", False)):
                 continue
-            if param.prior is not None:
+            if param.prior is not None and self.use_priors:
                 sampled_conf[param_name] = param.prior
             elif isinstance(param, HPOInteger):
                 sampled_conf[param_name] = param.center if centre_if_prior_unavailable else param.domain.cast_one(random.random(), frm=NepsDomain.unit_float())
@@ -622,54 +609,27 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         return sample
     
 
-    def _find_optimal_n_for_flops(
+    def _find_optimal_n_using_param_data(
         self,
         all_possible_model_configs: dict,
         trials: Mapping[str, Trial],
         target_flops: float
     ) -> tuple[float, float, float] | None:
-        """Find optimal parameter count N for given target FLOP budget using all_possible_model_configs.
-        
-        Returns:
-            Tuple of (optimal_n, slope, intercept) or None if extrapolation fails
-        """
         try:
             # Collect (N, FLOPS) pairs from all_possible_model_configs for robust estimation
-            ns_list = []
-            flops_list = []
+            use_lc_aware = self.strategy in ["approach1", "gemstones"]
+            use_pareto_fit = self.strategy in ["approach1", "approach2"]
+            data = self.extract_pareto_front_data(trials=trials, lc_aware=use_lc_aware, pareto_fit=use_pareto_fit)
             
-            for n_val, model_configs in all_possible_model_configs.items():
-                if not model_configs:
-                    continue
-                
-                # Use first model config as representative
-                model_config_tuple = model_configs[0]
-                model_config = dict(model_config_tuple)
-                
-                # Estimate FLOPS with a representative data parameter value
-                data_param = self.space.searchables[self.data_parameter_name]
-                data_val_mid = (data_param.domain.lower + data_param.domain.upper) / 2
-                model_config[self.data_parameter_name] = data_val_mid
-                model_config.update(self.space.constants)
-                
-                try:
-                    estimated_flops = self.flops_estimator(**model_config)
-                    ns_list.append(n_val)
-                    flops_list.append(estimated_flops)
-                except Exception as e:
-                    logger.debug(f"Could not estimate FLOPS for N={n_val}: {e}")
-                    continue
-            
-            if len(ns_list) < 2:
-                logger.warning("Not enough N/FLOPS pairs for fitting")
-                return None
+            flops_list = data["flops"]
+            ns_list = data["params"]
             
             # Fit in log-log space: log(N) = slope * log(FLOPS) + intercept
-            fitted_flops_params = self._fit_loglog_line(flops_list, ns_list)
+            fitted_flops_params = _fit_loglog_line(flops_list, ns_list)
             if fitted_flops_params is None:
                 logger.warning("Could not fit FLOPS-to-params line")
                 return None
-            fitted_ys, slope, intercept = fitted_flops_params
+            slope, intercept, fitted_ys = fitted_flops_params
             
             logger.info(f"Extracted slope={slope:.4f}, intercept={intercept:.4f} from all_possible_model_configs (N vs FLOPs in log-log)")
             
@@ -686,6 +646,8 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             closest_n = min(available_ns, key=lambda n: abs(n - target_n))
             logger.info(f"Selected nearest available N={closest_n:.2e} (target was {target_n:.2e})")
             
+            assert slope is not None and intercept is not None
+            
             return float(closest_n), float(slope), float(intercept)
             
         except Exception as e:
@@ -695,13 +657,9 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
     def _find_optimal_n_using_parametric_loss(
         self,
         all_possible_model_configs: dict,
+        trials: Mapping[str, Trial],
         target_flops: float
     ) -> tuple[float, float, float] | None:
-        """Find optimal parameter count N using scaling law slope beta/(beta+alpha) to fit FLOPS vs params.
-        
-        Returns:
-            Tuple of (optimal_n, slope, intercept) or None if extrapolation fails
-        """
         try:
             # Ensure scaling law parameters are fitted
             if self._scaling_law_params is None:
@@ -716,28 +674,14 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             ns_list = []
             flops_list = []
             
-            for n_val, model_configs in all_possible_model_configs.items():
-                if not model_configs:
-                    continue
-                
-                # Use first model config as representative
-                model_config_tuple = model_configs[0]
-                model_config = dict(model_config_tuple)
-                
-                # Estimate FLOPS with a representative data parameter value
-                data_param = self.space.searchables[self.data_parameter_name]
-                data_val_mid = (data_param.domain.lower + data_param.domain.upper) / 2
-                model_config[self.data_parameter_name] = data_val_mid
-                model_config.update(self.space.constants)
-                
-                try:
-                    estimated_flops = self.flops_estimator(**model_config)
-                    ns_list.append(n_val)
-                    flops_list.append(estimated_flops)
-                except Exception as e:
-                    logger.debug(f"Could not estimate FLOPS for N={n_val}: {e}")
-                    continue
+            use_lc_aware = self.strategy in ["approach1", "gemstones"]
+            use_pareto_fit = self.strategy in ["approach1", "approach2"]
+            fit_func = fit_pareto_front_loglog if use_pareto_fit else fit_convex_hull_loglog
+            result = fit_func(trials, lc_aware=use_lc_aware)
+            pareto_rows = result[5]
             
+            flops_list = [r[3] for r in pareto_rows]  # flops
+            ns_list = [float(r[0]) for r in pareto_rows]  # n_params
             if len(ns_list) < 2:
                 logger.warning("Not enough N/FLOPS pairs for fitting")
                 return None
@@ -780,11 +724,6 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         all_possible_model_configs: dict,
         max_target_flops: float
     ) -> tuple[dict[str, Any], float, float | None, float | None] | None:
-        """Grid over data parameter for a given optimal N and find config closest to target FLOPS.
-        
-        Returns:
-            Tuple of (best config dict, predicted loss, slope_loss, intercept_loss) or None if no valid config found
-        """
         try:
             # Get model configs for this N (list of tuples)
             model_configs_for_n = all_possible_model_configs[optimal_n]
@@ -799,7 +738,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             
             # Create fine-grained grid for data parameter with 1000 points
             data_param = self.space.searchables[self.data_parameter_name]
-            data_grid = torch.linspace(0, 1, steps=1000)
+            data_grid = torch.linspace(0, 1, steps=int(1e7))
             data_grid_values = data_param.domain.cast(data_grid, frm=NepsDomain.unit_float()).tolist()
             
             # Ensure scaling law parameters are fitted
@@ -807,12 +746,18 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 logger.warning("Scaling law parameters not fitted")
                 return None
             
-            # Find data value that gets closest to max_target_flops (without exceeding)
+            # Binary search for data value that gets closest to max_target_flops (without exceeding)
             best_config = None
             best_flops_diff = float("inf")
             best_estimated_flops = None
+            best_idx = -1
             
-            for data_val in data_grid_values:
+            # Binary search to find the right range
+            left, right = 0, len(data_grid_values) - 1
+            
+            while left <= right:
+                mid = (left + right) // 2
+                data_val = data_grid_values[mid]
                 conf = model_config.copy()
                 conf[self.data_parameter_name] = data_val
                 conf.update(self.space.constants)
@@ -820,19 +765,48 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 try:
                     estimated_flops = self.flops_estimator(**conf)
                 except Exception as e:
-                    logger.debug(f"Could not estimate FLOPs: {e}")
+                    logger.debug(f"Could not estimate FLOPs at mid={mid}: {e}")
+                    right = mid - 1
                     continue
                 
-                # Skip if exceeds budget
-                if estimated_flops > max_target_flops:
-                    continue
+                # Track this as potential best if within budget
+                if estimated_flops <= max_target_flops:
+                    flops_diff = max_target_flops - estimated_flops
+                    if flops_diff < best_flops_diff:
+                        best_flops_diff = flops_diff
+                        best_config = conf.copy()
+                        best_estimated_flops = estimated_flops
+                        best_idx = mid
                 
-                # Find closest to target without exceeding
-                flops_diff = max_target_flops - estimated_flops
-                if flops_diff < best_flops_diff:
-                    best_flops_diff = flops_diff
-                    best_config = conf
-                    best_estimated_flops = estimated_flops
+                # Adjust search bounds
+                if estimated_flops < max_target_flops:
+                    # Try higher data values
+                    closest_idx = mid
+                    left = mid + 1
+                else:
+                    # Try lower data values
+                    right = mid - 1
+            
+            # Check neighbors of best_idx for true best match
+            if best_idx >= 0:
+                for idx in [max(0, best_idx - 1), best_idx, min(len(data_grid_values) - 1, best_idx + 1)]:
+                    data_val = data_grid_values[idx]
+                    conf = model_config.copy()
+                    conf[self.data_parameter_name] = data_val
+                    conf.update(self.space.constants)
+                    
+                    try:
+                        estimated_flops = self.flops_estimator(**conf)
+                    except Exception as e:
+                        logger.debug(f"Could not estimate FLOPs at neighbor idx={idx}: {e}")
+                        continue
+                    
+                    if estimated_flops <= max_target_flops:
+                        flops_diff = max_target_flops - estimated_flops
+                        if flops_diff < best_flops_diff:
+                            best_flops_diff = flops_diff
+                            best_config = conf.copy()
+                            best_estimated_flops = estimated_flops
             
             if best_config is None:
                 logger.warning(f"Could not find valid config within FLOP budget {max_target_flops:.2e}")
@@ -868,14 +842,9 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         trials: Mapping[str, Trial], 
         max_target_flops: float
     ) -> tuple[dict[str, Any], float, float, float, float | None, float | None] | None:
-        """Extrapolate to max_target_flops by finding optimal N from Pareto front, then grid over D.
-        
-        Returns:
-            Tuple of (best config dict, predicted loss, slope_params, intercept_params, slope_loss, intercept_loss) or None
-        """
         try:
             # Find optimal N for the target FLOP budget using Pareto front
-            result = self._find_optimal_n_for_flops(all_possible_model_configs, trials, max_target_flops)
+            result = self._find_optimal_n_using_param_data(all_possible_model_configs, trials, max_target_flops)
             if result is None:
                 logger.warning("Could not find optimal N from Pareto front")
                 return None
@@ -886,8 +855,8 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             if self._scaling_law_params is None:
                 try:
                     with ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(Chinchilla_Guided_Scaling.get_power_law_curvature, trials)
-                        self._scaling_law_params = future.result(timeout=10)
+                        future = executor.submit(self.get_power_law_curvature, trials)
+                        self._scaling_law_params = future.result(timeout=30)
                 except TimeoutError:
                     logger.error("Scaling law fitting timed out")
                     return None
@@ -910,16 +879,12 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
     def extrapolate_by_parametric_loss(
         self, 
         all_possible_model_configs: dict, 
+        trials: Mapping[str, Trial],
         max_target_flops: float
     ) -> tuple[dict[str, Any], float, float, float, float | None, float | None] | None:
-        """Extrapolate to max_target_flops using scaling law parameters with unit slope fitting.
-        
-        Returns:
-            Tuple of (best config dict, predicted loss, slope_params, intercept_params, slope_loss, intercept_loss) or None
-        """
         try:
             # Find optimal N using scaling law-based approach
-            result = self._find_optimal_n_using_parametric_loss(all_possible_model_configs, max_target_flops)
+            result = self._find_optimal_n_using_parametric_loss(all_possible_model_configs, trials,max_target_flops)
             if result is None:
                 logger.warning("Could not find optimal N using scaling law")
                 return None
@@ -943,22 +908,130 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             logger.error(f"Error in extrapolate_by_parametric_loss: {e}")
             return None
 
-    def extrapolate(
+            
+    def _select_optimal_points_for_targets(
         self, 
+        selected_target_flops: list[float], 
+        true_pareto_info: dict
+    ) -> dict[float, tuple]:
+        optimal_points = {}
+        used_indices = set()
+        
+        for target in selected_target_flops:
+            distances = np.abs(np.array(true_pareto_info["flops"]) - target)
+            
+            sorted_indices = np.argsort(distances)
+            closest_idx = None
+            for idx in sorted_indices:
+                if idx not in used_indices:
+                    closest_idx = idx
+                    break
+            
+            if closest_idx is None:
+                logger.warning(f"No available points left for target {target:.2e}")
+                continue
+            
+            used_indices.add(closest_idx)
+            closest_flop = true_pareto_info["flops"][closest_idx]
+            optimal_param = true_pareto_info["n_params"][closest_idx]
+            optimal_loss = true_pareto_info["loss"][closest_idx]
+            optimal_points[target] = (closest_flop, optimal_param, optimal_loss)
+        
+        return optimal_points
+    
+    def extrapolate(self, trials: Mapping[str, Trial], true_pareto_info: dict) -> dict[str, Any] | None:
+        trials_sorted = OrderedDict(sorted(trials.items(), key=lambda item: item[1].metadata.time_sampled))
+        extrapolation_results_by_spent_ratio = {}  # Accumulate results for heatmap
+        
+        for i in range(len(trials_sorted)):
+            consecutive_trials = dict(list(trials_sorted.items())[:i])
+            spent_flops = sum([self.flops_estimator(**trial.config) for trial in consecutive_trials.values()])
+            jitter = 0.1
+            chosen_ratio = None
+            for ratio in self.spent_over_max_flops_ratios:
+                if ratio[0] <= spent_flops / self.max_flops <= ratio[1] + jitter:
+                    chosen_ratio = ratio
+                    break
+            
+            if chosen_ratio is None:
+                continue
+            
+            ratio_center = float((chosen_ratio[0] + chosen_ratio[1]) / 2)
+            
+            if ratio_center in extrapolation_results_by_spent_ratio:
+                continue
+            ratio_str = f"{ratio_center:.3f}".replace(".", "_")
+            logger.info(f"Trial {i+1}/{len(trials_sorted)}: Spent FLOPs so far: {spent_flops:.2e} ratio {ratio_center:.2f}")
+            
+            selected_target_flops = list(np.unique(
+                np.clip(
+                    spent_flops * self.target_over_spent_flops_ratios, 
+                    self.min_flops,
+                    self.max_flops,
+                )
+            ))
+            optimal_points = self._select_optimal_points_for_targets(selected_target_flops, true_pareto_info)
+        
+            extrapolation_data = None
+            # try:
+            extrapolation_data = self.extrapolate_for_target_flops(consecutive_trials, list(optimal_points.keys()), spent_flops, optimal_points)
+            if extrapolation_data is not None:
+                extrapolation_results_by_spent_ratio[ratio_center] = extrapolation_data
+
+                self._artifacts.append(
+                    Artifact(f"extrapolation_results_{ratio_str}", extrapolation_data, ArtifactType.JSON)
+                )
+                # try:
+                fig_extrapolation = self._plot_extrapolation_horizon(consecutive_trials, extrapolation_data)
+                if fig_extrapolation is not None:
+                    self._artifacts.append(
+                        Artifact(f"extrapolation_horizon_plot_{ratio_str}", fig_extrapolation, ArtifactType.FIGURE)
+                    )
+                # except Exception as e:
+                #     logger.warning(f"Failed to generate extrapolation horizon plot: {e}")
+                    
+            # except Exception as e:
+            #     logger.warning(f"Failed to perform extrapolation: {e}")
+        
+        # create heatmaps
+        if extrapolation_results_by_spent_ratio:
+            try:
+                heatmap_result = self._plot_interpolation_extrapolation_heatmap(extrapolation_results_by_spent_ratio)
+                if heatmap_result is not None:
+                    fig_loss, fig_params = heatmap_result
+                    self._artifacts.append(
+                        Artifact("loss_prediction_quality_heatmap", fig_loss, ArtifactType.FIGURE)
+                    )
+                    self._artifacts.append(
+                        Artifact("params_prediction_quality_heatmap", fig_params, ArtifactType.FIGURE)
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to generate interpolation/extrapolation heatmaps: {e}")
+            
+            try:
+                extrapolation_results_json = {}
+                for spent_ratio, result_data in extrapolation_results_by_spent_ratio.items():
+                    extrapolation_results_json[float(spent_ratio)] = result_data
+                
+                self._artifacts.append(
+                    Artifact("extrapolation_results_all_ratios", extrapolation_results_json, ArtifactType.JSON)
+                )
+            except Exception as e:
+                logger.warning(f"Failed to serialize extrapolation results to JSON artifact: {e}")
+        
+        return extrapolation_results_by_spent_ratio
+    
+    def extrapolate_for_target_flops(
+        self,
         trials: Mapping[str, Trial],
+        target_flops: list[float],
         spent_flops: float,
+        optimal_points: dict[float, tuple],
     ) -> dict:
+
         assert self.all_possible_model_configs is not None, "all_possible_model_configs must be set before calling extrapolate"
         
-        logger.info(f"Begin extrapolation for {spent_flops:.2e}")
-
-        target_flops = np.unique(
-            np.clip(
-                spent_flops * self.target_over_spent_flops_ratios, 
-                self.min_flops,
-                self.max_flops,
-            )
-        )
+        logger.info(f"Begin extrapolation")
         logger.info(f"Target FLOPs for extrapolation: {target_flops}")
         
         # Collect slope/intercept for each method
@@ -979,7 +1052,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 self.all_possible_model_configs, trials, target_flop,
             )
             result_parametric_loss = self.extrapolate_by_parametric_loss(
-                self.all_possible_model_configs, target_flop,
+                self.all_possible_model_configs, trials, target_flop,
             )
             
             config_by_param_data = None
@@ -1019,14 +1092,6 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 'intercept': avg_intercept_p,
             }
         
-        if slopes_loss_param_data:
-            avg_slope_l = np.mean([s for s in slopes_loss_param_data if s is not None])
-            avg_intercept_l = np.mean([i for i in intercepts_loss_param_data if i is not None])
-            fits['param_data']['loss'] = {
-                'slope': avg_slope_l,
-                'intercept': avg_intercept_l,
-            }
-        
         if slopes_params_parametric_loss:
             avg_slope_p = np.mean([s for s in slopes_params_parametric_loss if s is not None])
             avg_intercept_p = np.mean([i for i in intercepts_params_parametric_loss if i is not None])
@@ -1035,21 +1100,56 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 'intercept': avg_intercept_p,
             }
         
-        if slopes_loss_parametric_loss:
-            avg_slope_l = np.mean([s for s in slopes_loss_parametric_loss if s is not None])
-            avg_intercept_l = np.mean([i for i in intercepts_loss_parametric_loss if i is not None])
-            fits['parametric_loss']['loss'] = {
-                'slope': avg_slope_l,
-                'intercept': avg_intercept_l,
+        # Serialize extrapolation results
+        serialized_horizon = {}
+        for target_flop, (result_by_param_data, result_by_parametric_loss) in extrapolation_per_target_flop.items():
+            serialized_configs = {}
+            serialized_configs['target_flop'] = float(target_flop)
+            serialized_configs['target_spent_flops_ratio'] = float(target_flop)/float(spent_flops)
+
+            serialized_configs['optimal_point'] = {
+                'optimal_flops': optimal_points.get(target_flop, (None, None, None))[0],
+                'optimal_params': optimal_points.get(target_flop, (None, None, None))[1],
+                'optimal_loss': optimal_points.get(target_flop, (None, None, None))[2],
             }
+            
+            if result_by_param_data is not None:
+                config_by_param_data, loss_by_param_data = result_by_param_data
+                flops = float(self.flops_estimator(**config_by_param_data))
+                params = float(self.params_estimator(**config_by_param_data))
+                loss = float(self.evaluate_pipeline(**config_by_param_data)["objective_to_minimize"])
+                serialized_configs['param_data'] = {
+                    'flops': flops,
+                    'params': params,
+                    'loss': loss,
+                    'predicted_loss': float(loss_by_param_data),
+                    'config': dict(config_by_param_data),
+                }
+            
+            if result_by_parametric_loss is not None:
+                config_by_parametric_loss, loss_by_parametric_loss = result_by_parametric_loss
+                flops = float(self.flops_estimator(**config_by_parametric_loss))
+                params = float(self.params_estimator(**config_by_parametric_loss))
+                loss = float(self.evaluate_pipeline(**config_by_parametric_loss)["objective_to_minimize"])
+                serialized_configs['parametric_loss'] = {
+                    'flops': flops,
+                    'params': params,
+                    'loss': loss,
+                    'predicted_loss': float(loss_by_parametric_loss),
+                    'config': dict(config_by_parametric_loss),
+                }
+            
+            serialized_horizon[float(target_flop)] = serialized_configs
         
         return {
-            'configs': extrapolation_per_target_flop,
+            'spent_flops': float(spent_flops),
+            'max_evaluation_flops': float(self.max_evaluation_flops),
+            'spent_max_flops_ratio': float(spent_flops/self.max_evaluation_flops),
+            'configs': serialized_horizon,
             'fits': fits,
         }
 
-    @classmethod
-    def get_power_law_curvature(cls, trials: Mapping[str, Trial]) -> ScalingLawParameters:
+    def get_power_law_curvature(self, trials: Mapping[str, Trial]) -> ScalingLawParameters:
         # L = E + A / N^alpha + B / D^beta
         # where A = e^a and B = e^b
 
@@ -1094,6 +1194,16 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             return loss
 
 
+        # use_lc_aware = self.strategy in ["approach1", "gemstones"]
+        # use_pareto_fit = self.strategy in ["approach1", "approach2"]
+        # fit_func = fit_pareto_front_loglog if use_pareto_fit else fit_convex_hull_loglog
+        # result = fit_func(trials, lc_aware=use_lc_aware)
+        # pareto_rows = result[5]
+        
+        # l_list = [r[2] for r in pareto_rows]  # flops
+        # n_list = [float(r[0]) for r in pareto_rows]  # n_params
+        # d_list = [float(r[1]) for r in pareto_rows]  # n_data
+
         l_list, n_list, d_list = [], [], []
         for trial in trials.values():
             if trial.report is None or trial.report.objective_to_minimize is None or not np.isfinite(trial.report.objective_to_minimize) or isinstance(trial.report.objective_to_minimize, Sequence):
@@ -1102,8 +1212,8 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 logger.warning(f"Trial {trial.id} has no extra data. Skipping.")
                 continue
             try:
-                n_list.append(trial.report.extra[cls.N_PARAM_KEY])
-                d_list.append(trial.report.extra[cls.N_DATA_KEY])
+                n_list.append(trial.report.extra[self.N_PARAM_KEY])
+                d_list.append(trial.report.extra[self.N_DATA_KEY])
                 l_list.append(float(trial.report.objective_to_minimize))
             except KeyError as e:
                 logger.error(f"Trial {trial.id} missing required key {e} in extra. Skipping.")
@@ -1126,23 +1236,23 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             # For 5-10 points: use minimal grid (8-20 initializations)
             initialization = [
                 (0, 5, 5, 0.5, 0.5),
-                (-1, 0, 0, 0.5, 0.5),
-                (1, 10, 10, 1.0, 1.0),
-                (0.5, 5, 10, 0.5, 1.0),
-                (0, 10, 5, 1.0, 0.5),
-                (-0.5, 0, 10, 0.5, 1.0),
-                (0, 0, 0, 0.5, 0.5),
-                (0.5, 5, 5, 1.0, 1.0),
+                (-1, 0, 0, 0.3, 0.3),
+                (1, 10, 10, 0.6, 0.6),
+                (0.5, 5, 10, 0.4, 0.5),
+                (0, 10, 5, 0.5, 0.4),
+                (-0.5, 0, 10, 0.35, 0.6),
+                (0, 0, 0, 0.45, 0.55),
+                (0.5, 5, 5, 0.55, 0.45),
                 (np.log(np.mean(L)), 5, 5, 0.5, 0.5),  # Data-informed E
             ]
         else:
-            # For 11+ points: use moderate grid (2880 -> 200 initializations)
+            # For 11+ points: use moderate grid with restricted alpha/beta bounds
             initialization = list(itertools.product(
                 [-1, -0.5, 0, 0.5, 1],        # E (5)
                 [0, 5, 10, 15, 20, 25],       # a (6)
                 [0, 5, 10, 15, 20, 25],       # b (6)
-                [0, 0.5, 1.0, 1.5, 2.0],      # alpha (4)
-                [0, 0.5, 1.0, 1.5, 2.0],      # beta (4)
+                [0.3, 0.35, 0.5, 0.65],       # alpha (4) - constrained to [0.3, 0.7]
+                [0.3, 0.35, 0.5, 0.65],       # beta (4) - constrained to [0.3, 0.7]
             ))
 
         best_result = None
@@ -1159,13 +1269,13 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 # Bounds to prevent numerical issues
                 # E: unbounded (can be negative or positive)
                 # a, b: [0, 10] to prevent exp overflow
-                # alpha, beta: [0.01, 1.0] for reasonable power law exponents
+                # alpha, beta: [0.2, 0.7] for reasonable power law exponents
                 bounds = [
                     (None, None),      # E
                     (0, 10),         # a
                     (0, 10),         # b
-                    (0.01, 1.0),       # alpha
-                    (0.01, 1.0),       # beta
+                    (0.2, 0.7),        # alpha
+                    (0.2, 0.7),        # beta
                 ]
                 
                 res = minimize(
@@ -1191,7 +1301,6 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
     
     @classmethod
     def _extract_scaling_metrics(cls, trials: Mapping[str, Trial]) -> list[tuple] | None:
-        """Extract (flops, n_params, n_data, loss) from trials."""
         rows = []
         for trial in trials.values():
             if (trial.report is None or trial.report.objective_to_minimize is None or 
@@ -1215,101 +1324,24 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         
         return rows if rows else None
 
-    @staticmethod
-    def _fit_loglog_line(xs: list, ys: list) -> tuple[list, float, float] | None:
-        """Fit line in log-log space and return fitted values, slope, and intercept."""
-        try:
-            log_xs = np.log(np.array(xs))
-            log_ys = np.log(np.array(ys))
-            
-            if not (np.all(np.isfinite(log_xs)) and np.all(np.isfinite(log_ys))):
-                return None
-            
-            coeffs = np.polyfit(log_xs, log_ys, 1)
-            slope = coeffs[0]
-            intercept = coeffs[1]
-            
-            if not np.isfinite(slope):
-                return None
-            
-            fit_line = np.poly1d(coeffs)
-            fitted_log_ys = fit_line(log_xs)
-            fitted_ys = np.exp(fitted_log_ys)
-            
-            return fitted_ys.tolist(), slope, intercept
-        except Exception as e:
-            logger.debug(f"Could not fit loglog line: {e}")
-            return None
-
-    def _create_scaling_plot(self, xs: list, ys: list, xlabel: str, ylabel: str, title: str) -> Figure:
-        """Create a single scaling relationship plot with optional fitted line."""
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.scatter(xs, ys, marker='o', alpha=0.9)
-        
-        # Try to fit a line
-        fit_result = self._fit_loglog_line(xs, ys)
-        if fit_result is not None:
-            fitted_ys, slope, intercept = fit_result
-            ax.plot(xs, fitted_ys, 'r--', linewidth=2, alpha=0.8, label=f'Fit (slope={slope:.3f})')
-        
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend(loc='best', fontsize=9)
-        plt.tight_layout()
-        
-        return fig
+    
 
     def _plot_flop_vs_param_and_data(self, trials: Mapping[str, Trial]) -> tuple[Figure, Figure] | None:
-        """Generate FLOPs vs Params and FLOPs vs Data plots."""
-        
         use_lc_aware = self.strategy in ["approach1", "gemstones"]
         use_pareto_fit = self.strategy in ["approach1", "approach2"]
-        fit_func = fit_pareto_front_loglog if use_pareto_fit else fit_convex_hull_loglog
-        result = fit_func(trials, lc_aware=use_lc_aware)
-        pareto_rows = result[5]
+        pareto_data = self.extract_pareto_front_data(trials, lc_aware=use_lc_aware, pareto_fit=use_pareto_fit)
         
-        xs = [r[3] for r in pareto_rows]  # flops
-        ys_params = [float(r[0]) for r in pareto_rows]  # n_params
-        ys_data = [float(r[1]) for r in pareto_rows]  # n_data
+        xs = pareto_data['flops']
+        ys_params = pareto_data['params']
+        ys_data = pareto_data['data']
         
-        fig1 = self._create_scaling_plot(xs, ys_params, "Flops", "Params", "FLOPs vs Params")
-        fig2 = self._create_scaling_plot(xs, ys_data, "Flops", "Data Points", "FLOPs vs Data")
+        fig1 = _create_scaling_plot(xs, ys_params, "Flops", "Params", "FLOPs vs Params")
+        fig2 = _create_scaling_plot(xs, ys_data, "Flops", "Data Points", "FLOPs vs Data")
         
         return fig1, fig2
 
-
-    def _gaussian_smooth_losses(self, flop_loss_tuples: list[tuple[float, float]], sigma: float = 1.0) -> list[tuple[float, float]]:
-        """Apply Gaussian smoothing to loss values based on FLOP ordering.
-        
-        Args:
-            flop_loss_tuples: List of (flops, loss) tuples
-            sigma: Gaussian kernel standard deviation (larger = more smoothing)
-        
-        Returns:
-            List of (flops, smoothed_loss) tuples, sorted by flops
-        """
-        if len(flop_loss_tuples) < 3:
-            return sorted(flop_loss_tuples, key=lambda x: x[0])
-        
-        from scipy.ndimage import gaussian_filter1d
-        
-        # Sort by flops
-        sorted_tuples = sorted(flop_loss_tuples, key=lambda x: x[0])
-        flops = np.array([f for f, _ in sorted_tuples])
-        losses = np.array([l for _, l in sorted_tuples])
-        
-        # Apply Gaussian smoothing along the FLOP axis
-        smoothed_losses = gaussian_filter1d(losses, sigma=sigma)
-        
-        return list(zip(flops.tolist(), smoothed_losses.tolist()))
-
     @classmethod
-    def _extract_trial_data(cls, trials: Mapping[str, Trial]) -> tuple[list, dict, dict] | None:
-        """Extract and validate trial data for plotting."""
+    def _extract_trial_data(cls, trials: Mapping[str, Trial]) -> tuple[list, dict] | None:
         rows = []
         trial_learning_curves = {}
         
@@ -1331,11 +1363,10 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 logger.debug(f"Trial {trial.id}: {e}")
                 continue
         
-        return (rows, trial_learning_curves, {}) if rows else None
+        return (rows, trial_learning_curves) if rows else None
 
     @staticmethod
     def _extract_flop_loss_from_lc(learning_curve) -> list[tuple[float, float]]:
-        """Extract (flops, loss) pairs from learning curve."""
         pairs = []
         for point in learning_curve:
             if isinstance(point, (tuple, list)) and len(point) >= 3:
@@ -1348,15 +1379,13 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         return sorted(pairs, key=lambda x: x[0]) if pairs else []
 
     def _plot_flops_per_objective_with_lc(self, trials: Mapping[str, Trial]) -> Figure | None:
-        """Generate training loss vs FLOPs visualization with learning curve overlay."""
-        
         # Extract trial data
         data = self._extract_trial_data(trials)
         if data is None:
             logger.warning("No evaluated trials with objectives/flops to plot.")
             return None
         
-        rows, trial_learning_curves, _ = data
+        rows, trial_learning_curves = data
         
         # Validate multi-objective
         first_obj = rows[0][1]
@@ -1379,7 +1408,6 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
 
     def _create_lc_plot(self, sorted_param_counts, trial_learning_curves, 
                         slope, flops_front, objs_front, fitted_objs) -> Figure:
-        """Create and configure the learning curve plot."""
         from matplotlib.colors import Normalize
         
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -1429,12 +1457,13 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         plt.tight_layout()
         return fig
     
-    def _plot_extrapolation_horizon(self, trials: Mapping[str, Trial], extrapolation_horizon: dict) -> Figure | None:
+    def _plot_extrapolation_horizon(self, trials: Mapping[str, Trial], extrapolation_data: dict) -> Figure | None:
         use_lc_aware = self.strategy in ["approach1", "gemstones"]
         use_pareto_fit = self.strategy in ["approach1", "approach2"]
         fit_func = fit_pareto_front_loglog if use_pareto_fit else fit_convex_hull_loglog
         result = fit_func(trials, lc_aware=use_lc_aware)
         pareto_rows = result[5]
+        all_rows = result[6]
         
         if not pareto_rows:
             logger.warning("No evaluated trials with flops/params to plot")
@@ -1444,48 +1473,92 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         actual_params = [r[0] for r in pareto_rows]
         actual_loss = [r[2] for r in pareto_rows]
         
+        # Extract all evaluated trials (not just Pareto) for gray background
+        all_flops = [r[3] for r in all_rows] if all_rows else []
+        all_params = [r[0] for r in all_rows] if all_rows else []
+        all_loss = [r[2] for r in all_rows] if all_rows else []
+        
         # Extract configs and fits from extrapolation_horizon
-        configs = extrapolation_horizon.get('configs', {})
-        fits = extrapolation_horizon.get('fits', {})
+        configs = extrapolation_data.get('configs', {})
+        fits = extrapolation_data.get('fits', {})
         
         # Extract predicted points from extrapolation results
         predicted_flops_param_data = []
         predicted_params_param_data = []
+        predicted_flops_param_data = []
+        predicted_params_param_data = []
         predicted_loss_param_data = []
+
+        optimal_flops = []
+        optimal_params = []
+        optimal_loss = []
         
         predicted_flops_parametric_loss = []
         predicted_params_parametric_loss = []
         predicted_loss_parametric_loss = []
         
-        for target_flop, (result_by_param_data, result_by_parametric_loss) in configs.items():
-            if result_by_param_data is not None:
-                config_by_param_data, loss_by_param_data = result_by_param_data
-                try:
-                    flops = self.flops_estimator(**config_by_param_data)
-                    params = self.params_estimator(**config_by_param_data)
-                    predicted_flops_param_data.append(flops)
-                    predicted_params_param_data.append(params)
-                    predicted_loss_param_data.append(loss_by_param_data)
-                except Exception as e:
-                    logger.debug(f"Could not extract predicted values for param_data: {e}")
+        for target_flop, result in configs.items():
+            if result is None:
+                continue
             
-            if result_by_parametric_loss is not None:
-                config_by_parametric_loss, loss_by_parametric_loss = result_by_parametric_loss
-                try:
-                    flops = self.flops_estimator(**config_by_parametric_loss)
-                    params = self.params_estimator(**config_by_parametric_loss)
-                    predicted_flops_parametric_loss.append(flops)
-                    predicted_params_parametric_loss.append(params)
-                    predicted_loss_parametric_loss.append(loss_by_parametric_loss)
-                except Exception as e:
-                    logger.debug(f"Could not extract predicted values for parametric_loss: {e}")
-        
+            # Extract param_data predictions
+            try:
+                optimal_point = result.get('optimal_point')
+                if optimal_point is not None:
+                    optimal_flop = optimal_point.get('optimal_flops')
+                    optimal_param = optimal_point.get('optimal_params')
+                    optimal_loss_val = optimal_point.get('optimal_loss')
+                    
+                    if optimal_flop is not None and optimal_param is not None:
+                        optimal_flops.append(float(optimal_flop))
+                        optimal_params.append(float(optimal_param))
+                        optimal_loss.append(float(optimal_loss_val) if optimal_loss_val is not None else 0.0)
+                
+                param_data_result = result.get('param_data')
+                if param_data_result is not None:
+                    flops = param_data_result.get('flops')
+                    params = param_data_result.get('params')
+                    predicted_loss = param_data_result.get('predicted_loss')
+                    loss = param_data_result.get('loss')
+                    
+                    if flops is not None and params is not None:
+                        predicted_flops_param_data.append(flops)
+                        predicted_params_param_data.append(params)
+                        predicted_loss_param_data.append(loss if loss is not None else 0.0)
+            except Exception as e:
+                logger.debug(f"Could not extract param_data predictions: {e}")
+            
+            # Extract parametric_loss predictions
+            try:
+                parametric_loss_result = result.get('parametric_loss')
+                if parametric_loss_result is not None:
+                    flops = parametric_loss_result.get('flops')
+                    params = parametric_loss_result.get('params')
+                    loss = parametric_loss_result.get('predicted_loss')
+                    
+                    if flops is not None and params is not None:
+                        predicted_flops_parametric_loss.append(flops)
+                        predicted_params_parametric_loss.append(params)
+                        predicted_loss_parametric_loss.append(loss if loss is not None else 0.0)
+            except Exception as e:
+                logger.debug(f"Could not extract parametric_loss predictions: {e}")
         # Create figure with subplots
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         
         # Plot 1: FLOPs vs Params (loglog)
         ax1 = axes[0]
-        ax1.scatter(actual_flops, actual_params, c='blue', marker='o', s=50, alpha=0.6, label='Evaluated trials')
+        
+        # Plot all evaluated trials in gray (background)
+        if all_flops:
+            ax1.scatter(all_flops, all_params, c='gray', marker='o', s=30, alpha=0.3, label='All evaluated trials', zorder=1)
+        
+        # Plot Pareto front in blue (foreground)
+        ax1.scatter(actual_flops, actual_params, c='blue', marker='o', s=70, alpha=0.8, label='Pareto optimal', edgecolors='darkblue', linewidth=1, zorder=2)
+        
+        # Plot optimal points as stars
+        
+        ax1.scatter(optimal_flops, optimal_params, c='gold', marker='*', s=100, 
+                    edgecolors='orange', linewidth=2, label='Optimal (true Pareto)', zorder=5)
         
         # Plot predicted points
         if predicted_flops_param_data:
@@ -1510,7 +1583,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             fitted_log_params = slope * np.log(flops_range) + intercept
             fitted_params = np.exp(fitted_log_params)
             ax1.plot(flops_range, fitted_params, 'g-', linewidth=2.5, alpha=0.8, 
-                    label=f'Fit param_data (slope={slope:.3f})')
+                    label=f'Fit parametric_cost (slope={slope:.3f})')
         
         if fits.get('parametric_loss', {}).get('params'):
             fit_data = fits['parametric_loss']['params']
@@ -1532,7 +1605,18 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         
         # Plot 2: FLOPs vs Loss (loglog)
         ax2 = axes[1]
-        ax2.scatter(actual_flops, actual_loss, c='blue', marker='o', s=50, alpha=0.6, label='Evaluated trials')
+        
+        # Plot all evaluated trials in gray (background)
+        if all_flops:
+            ax2.scatter(all_flops, all_loss, c='gray', marker='o', s=30, alpha=0.3, label='All evaluated trials', zorder=1)
+        
+        # Plot Pareto front in blue (foreground)
+        ax2.scatter(actual_flops, actual_loss, c='blue', marker='o', s=70, alpha=0.8, label='Pareto optimal', edgecolors='darkblue', linewidth=1, zorder=2)
+        
+        # Plot optimal points as stars
+        
+        ax2.scatter(optimal_flops, optimal_loss, c='gold', marker='*', s=100, 
+                    edgecolors='orange', linewidth=2, label='Optimal (true Pareto)', zorder=5)
         
         # Plot predicted points
         if predicted_flops_param_data:
@@ -1575,103 +1659,173 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         plt.tight_layout()
         return fig
     
-    def _serialize_extrapolation_results(self, spent_flops: float, extrapolation_horizon: dict) -> dict[str, Any]:
-        """Serialize extrapolation results to JSON-compatible format."""
-        configs = extrapolation_horizon.get('configs', {})
-        fits = extrapolation_horizon.get('fits', {})
-        serialized_horizon = {}
+    @classmethod
+    def aggregate_extrapolation_errors(
+        cls,
+        extrapolation_results_by_spent_ratio: dict[float, dict],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        spent_ratios_list = sorted(extrapolation_results_by_spent_ratio.keys())
+        target_ratios_list = sorted(cls.target_over_spent_flops_ratios)
         
-        for target_flop, (result_by_param_data, result_by_parametric_loss) in configs.items():
-            serialized_configs = {}
-            
-            if result_by_param_data is not None:
-                config_by_param_data, loss_by_param_data = result_by_param_data
-                try:
-                    flops = float(self.flops_estimator(**config_by_param_data))
-                    params = float(self.params_estimator(**config_by_param_data))
-                    serialized_configs['param_data'] = {
-                        'target_flop': float(target_flop),
-                        'flops': flops,
-                        'params': params,
-                        'predicted_loss': float(loss_by_param_data),
-                        'config': dict(config_by_param_data),
-                    }
-                except Exception as e:
-                    logger.debug(f"Could not serialize param_data config: {e}")
-                    serialized_configs['param_data'] = None
-            
-            if result_by_parametric_loss is not None:
-                config_by_parametric_loss, loss_by_parametric_loss = result_by_parametric_loss
-                try:
-                    flops = float(self.flops_estimator(**config_by_parametric_loss))
-                    params = float(self.params_estimator(**config_by_parametric_loss))
-                    serialized_configs['parametric_loss'] = {
-                        'target_flop': float(target_flop),
-                        'flops': flops,
-                        'params': params,
-                        'predicted_loss': float(loss_by_parametric_loss),
-                        'config': dict(config_by_parametric_loss),
-                    }
-                except Exception as e:
-                    logger.debug(f"Could not serialize parametric_loss config: {e}")
-                    serialized_configs['parametric_loss'] = None
-            
-            serialized_horizon[float(target_flop)] = serialized_configs
+        # Matrix: rows=spent_ratios, cols=target_ratios, values=prediction_error
+        loss_heatmap_matrix = np.zeros((len(spent_ratios_list), len(target_ratios_list)))
+        params_heatmap_matrix = np.zeros((len(spent_ratios_list), len(target_ratios_list)))
         
-        return {
-            'spent_flops': float(spent_flops),
-            'max_evaluation_flops': float(self.max_evaluation_flops),
-            'configs': serialized_horizon,
-            'fits': fits
-        }
+        # Aggregate prediction errors across multiple spent_ratio checkpoints
+        for spent_idx, spent_ratio in enumerate(spent_ratios_list):
+            extrap_result = extrapolation_results_by_spent_ratio.get(spent_ratio)
+            if extrap_result is None or 'configs' not in extrap_result:
+                continue
+            
+            configs = extrap_result['configs']
+            
+            for target_idx, (target_flop, result) in enumerate(configs.items()):
+                loss_errors = []
+                params_errors = []
+                
+                # Try param_data method
+                if result.get('param_data') is not None:
+                    true_loss = result['optimal_point']['optimal_loss']
+                    true_params = result['optimal_point']['optimal_params']
+                    actual_loss = result['param_data']['loss']
+                    predicted_params = result['param_data']['params']
+                else:
+                    true_loss = result['optimal_loss']
+                    true_params = result['optimal_params']
+                    actual_loss = result['loss']
+                    predicted_params = result['params']
+                if actual_loss is not None and np.isfinite(actual_loss):
+                    relative_error = abs(actual_loss - true_loss) / (abs(true_loss) + 1e-8)
+                    relative_params_error = abs(predicted_params - true_params) / (abs(true_params) + 1e-8)
+
+                    loss_errors.append(relative_error)
+                    params_errors.append(relative_params_error)
+                
+                # Try parametric_loss method
+                # if result_by_parametric_loss is not None:
+                #     config, predicted_loss = result_by_parametric_loss
+                #     if predicted_loss is not None and np.isfinite(predicted_loss):
+                #         relative_error = abs(predicted_loss - true_loss) / (abs(true_loss) + 1e-8)
+                #         errors.append(relative_error)
+            
+                if loss_errors:
+                    loss_heatmap_matrix[spent_idx, target_idx] = np.mean(loss_errors)
+                if params_errors:
+                    params_heatmap_matrix[spent_idx, target_idx] = np.mean(params_errors)
+        
+        return loss_heatmap_matrix, params_heatmap_matrix
+
+    @classmethod
+    def _plot_interpolation_extrapolation_heatmap(
+        cls, 
+        extrapolation_results_by_spent_ratio: dict[float, dict]
+    ) -> tuple[Figure, Figure] | None:
+        # Aggregate errors into heatmap matrices
+        loss_heatmap_matrix, params_heatmap_matrix = cls.aggregate_extrapolation_errors(
+            extrapolation_results_by_spent_ratio,
+        )
+        
+        spent_ratios_list = sorted(extrapolation_results_by_spent_ratio.keys())
+        target_ratios_list = sorted(cls.target_over_spent_flops_ratios)
+        # Create heatmap visualization
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        # Use log scale for error visualization
+        # Safely compute vmin and vmax
+        positive_values = loss_heatmap_matrix[loss_heatmap_matrix > 0]
+        if len(positive_values) > 0:
+            vmin = max(positive_values.min(), 0.01)
+            vmax = max(positive_values.max(), 0.1)
+        else:
+            logger.warning("No positive values in heatmap matrix. Using default scale.")
+            vmin = 0.01
+            vmax = 1.0
+        
+        im = ax.imshow(
+            loss_heatmap_matrix, 
+            aspect='auto',
+            cmap='RdYlGn_r',  # Red (high error) to Green (low error)
+            norm=LogNorm(vmin=vmin, vmax=vmax),
+            interpolation='nearest'
+        )
+        
+        # Set labels
+        ax.set_xticks(range(len(target_ratios_list)))
+        ax.set_yticks(range(len(spent_ratios_list)))
+        ax.set_xticklabels([f'{r:.2f}' for r in target_ratios_list], rotation=45, ha='right')
+        ax.set_yticklabels([f'{float(r):.2f}' for r in spent_ratios_list])
+        
+        ax.set_xlabel('Target / Spent FLOPS Ratio (Interpolation/Extrapolation Distance)', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Spent / Max Space FLOPS Ratio (Budget Consumption)', fontsize=12, fontweight='bold')
+        ax.set_title('Prediction Quality Heatmap: Relative Error Across Budget and Target Ratios', fontsize=13, fontweight='bold')
+        
+        # Add colorbar
+        cbar = plt.colorbar(im, ax=ax, label='Mean Relative Prediction Error')
+        
+        # Annotate cells with mean relative error values
+        for spent_idx in range(len(spent_ratios_list)):
+            for target_idx in range(len(target_ratios_list)):
+                error = loss_heatmap_matrix[spent_idx, target_idx]
+                if error > 0:
+                    text = ax.text(target_idx, spent_idx, f'{error:.2f}',
+                                    ha="center", va="center", color="black", fontsize=8, weight='bold')
+        
+        plt.tight_layout()
+        fig_loss = fig
+        
+        # Create params heatmap
+        fig_params, ax_params = plt.subplots(figsize=(12, 8))
+        
+        # Use log scale for error visualization
+        # Safely compute vmin and vmax for params
+        positive_values_params = params_heatmap_matrix[params_heatmap_matrix > 0]
+        if len(positive_values_params) > 0:
+            vmin_params = max(positive_values_params.min(), 0.01)
+            vmax_params = max(positive_values_params.max(), 0.1)
+        else:
+            logger.warning("No positive values in params heatmap matrix. Using default scale.")
+            vmin_params = 0.01
+            vmax_params = 1.0
+        
+        im_params = ax_params.imshow(
+            params_heatmap_matrix, 
+            aspect='auto',
+            cmap='RdYlGn_r',  # Red (high error) to Green (low error)
+            norm=LogNorm(vmin=vmin_params, vmax=vmax_params),
+            interpolation='nearest'
+        )
+        
+        # Set labels
+        ax_params.set_xticks(range(len(target_ratios_list)))
+        ax_params.set_yticks(range(len(spent_ratios_list)))
+        ax_params.set_xticklabels([f'{r:.2f}' for r in target_ratios_list], rotation=45, ha='right')
+        ax_params.set_yticklabels([f'{float(r):.2f}' for r in spent_ratios_list])
+        
+        ax_params.set_xlabel('Target / Spent FLOPS Ratio (Interpolation/Extrapolation Distance)', fontsize=12, fontweight='bold')
+        ax_params.set_ylabel('Spent / Max Space FLOPS Ratio (Budget Consumption)', fontsize=12, fontweight='bold')
+        ax_params.set_title('Parameter Prediction Quality Heatmap: Relative Error Across Budget and Target Ratios', fontsize=13, fontweight='bold')
+        
+        # Add colorbar
+        cbar_params = plt.colorbar(im_params, ax=ax_params, label='Mean Relative Prediction Error')
+        
+        # Annotate cells with mean relative error values
+        for spent_idx in range(len(spent_ratios_list)):
+            for target_idx in range(len(target_ratios_list)):
+                error = params_heatmap_matrix[spent_idx, target_idx]
+                if error > 0:
+                    text = ax_params.text(target_idx, spent_idx, f'{error:.2f}',
+                                    ha="center", va="center", color="black", fontsize=8, weight='bold')
+        
+        plt.tight_layout()
+        return fig_loss, fig_params
     
     def get_trial_artifacts(self, trials: Mapping[str, Trial]) -> list[Artifact]:
-        """Consolidates all artifacts: shared scaling law visualization plots from the base class
-        plus Chinchilla-specific scaling trend plot showing fitted scaling law parameters.
-
-        Args:
-            trials: Mapping of trial IDs to Trial objects. Required to generate plots.
-
-        Returns:
-            List of Artifact objects combining parent class plots and custom scaling trend plot.
-        """
         if trials is None or len(trials) < 5:
             return []
+        
         # Get base class artifacts (class method needs to be called on the class)
         artifacts = super().get_trial_artifacts(trials) or []
-
-        spent_flops = sum([self.flops_estimator(**trial.config) for trial in trials.values()])
-        
-        extrapolation_horizon = None
-        if self.all_possible_model_configs is not None:
-            try:
-                extrapolation_horizon = self.extrapolate(trials, spent_flops)
-                if extrapolation_horizon is not None:
-                    # Add extrapolation plot
-                    try:
-                        fig_extrapolation = self._plot_extrapolation_horizon(trials, extrapolation_horizon)
-                        if fig_extrapolation is not None:
-                            artifacts.append(
-                                # Artifact(f"extrapolation_horizon_plot{spent_flops}", fig_extrapolation, ArtifactType.FIGURE)
-                                Artifact(f"extrapolation_horizon_plot", fig_extrapolation, ArtifactType.FIGURE)
-                            )
-                    except Exception as e:
-                        logger.warning(f"Failed to generate extrapolation horizon plot: {e}")
-                    
-                    # Add extrapolation JSON artifact
-                    try:
-                        extrapolation_data = self._serialize_extrapolation_results(spent_flops, extrapolation_horizon)
-                        from subs.neps.utils.files import JsonWriter
-                        # Store as JSON data in artifact metadata
-                        artifacts.append(
-                            # Artifact(f"extrapolation_results{spent_flops}", extrapolation_data, ArtifactType.JSON)
-                            Artifact(f"extrapolation_results", extrapolation_data, ArtifactType.JSON)
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to serialize extrapolation results: {e}")
-            except Exception as e:
-                logger.warning(f"Failed to perform extrapolation: {e}")
-
+        artifacts.extend(self._artifacts)
         try:
             figs = self._plot_flop_vs_param_and_data(trials)
             if figs is not None:
@@ -1716,10 +1870,11 @@ def chinchilla_guided_scaling(
     evaluate_pipeline: Callable[..., Any],
     max_evaluation_flops: int,
     strategy: Literal["approach1", "approach2", "gemstones"] = "gemstones",
+    use_priors: bool = False,
 ) -> CustomOptimizer:
         
     return custom(name="chinchilla", optimizer=lambda space: Chinchilla_Guided_Scaling(
-        space=convert_neps_to_classic_search_space(space=space), # type: ignore
+        space=convert_neps_to_classic_search_space(space), # type: ignore
         flops_estimator=flops_estimator,
         params_estimator=params_estimator,
         seen_datapoints_estimator=seen_datapoints_estimator,
@@ -1728,4 +1883,5 @@ def chinchilla_guided_scaling(
         evaluate_pipeline=evaluate_pipeline,
         data_parameter_name=data_parameter_name,
         strategy=strategy,
+        use_priors=use_priors,
     ))

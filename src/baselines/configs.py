@@ -20,7 +20,7 @@ class OptimizerEnum(StrEnum):
     GRID_SEARCH = "grid_search"
 
 def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, seen_datapoints_estimator, flops_estimator, aspect_ratio_fn, data_parameter_name, size_per_numerical_dimension=10):
-    def get_optimizer(optimizer_name: OptimizerEnum, max_evaluation_flops, max_target_flops, seed) -> tuple[Callable[..., Any] | CustomOptimizer, dict[str, Any]]:
+    def get_optimizer(optimizer_name: OptimizerEnum, root_dir, max_evaluation_flops, max_target_flops = 0, seed = 1, use_priors = False) -> tuple[Callable[..., Any] | CustomOptimizer, dict[str, Any]]:
         kwargs = {}
         match optimizer_name:
             case OptimizerEnum.BO_SPACE_EXPANSION: 
@@ -58,6 +58,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     max_evaluation_flops=max_evaluation_flops,
                     data_parameter_name=data_parameter_name,
                     strategy="approach1",
+                    use_priors=use_priors,
                 ), kwargs
         
             case OptimizerEnum.CHINCHILLA_APPROACH2: 
@@ -70,6 +71,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     max_evaluation_flops=max_evaluation_flops,
                     data_parameter_name=data_parameter_name,
                     strategy="approach2",
+                    use_priors=use_priors,
                 ), kwargs
         
             case OptimizerEnum.CHINCHILLA_GEMSTONES: 
@@ -82,21 +84,37 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     max_evaluation_flops=max_evaluation_flops,
                     data_parameter_name=data_parameter_name,
                     strategy="gemstones",
+                    use_priors=use_priors,
                 ), kwargs
         
             case OptimizerEnum.RANDOM_SEARCH: 
                 return lambda space: random_search(
                     space,
-                    use_priors=True,
+                    use_priors=use_priors,
                     ignore_fidelity=True,
                     constraints_func= lambda conf: max_evaluation_flops - flops_estimator(**conf)
                 ), kwargs
             case OptimizerEnum.CARBS: 
                 from src.baselines.carbs_utils import get_carbs_optimizer, evaluate_pipeline_wrapper
-                optimizer, carbs_opt = get_carbs_optimizer(pipeline_space, seed)
+                optimizer, carbs_opt = get_carbs_optimizer(
+                    pipeline_space, 
+                    seed, use_priors,
+                    params_estimator=param_estimator,
+                    seen_datapoints_estimator=seen_datapoints_estimator,
+                    flops_estimator=flops_estimator,
+                    max_evaluation_flops=max_evaluation_flops,
+                    data_parameter_name=data_parameter_name,
+                    evaluate_pipeline=evaluate_pipeline,
+                    root_dir=root_dir,
+                    )
                 return optimizer, kwargs | {"evaluate_pipeline": evaluate_pipeline_wrapper(carbs_opt, evaluate_pipeline)}
             case OptimizerEnum.GRID_SEARCH:
-                return lambda space: grid_search(space, size_per_numerical_dimension=size_per_numerical_dimension), kwargs
+                return lambda space: random_search( # changed to random search with no limit on budget
+                    space,
+                    use_priors=use_priors,
+                    ignore_fidelity=False,
+                    constraints_func= lambda conf: max_evaluation_flops - flops_estimator(**conf)
+                ), kwargs
             case _:
                 raise ValueError(f"Unknown optimizer: {optimizer_name}")
     return get_optimizer

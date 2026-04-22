@@ -1,0 +1,175 @@
+benchmarks:
+  yahpo-lcbench-3945:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-7593:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-34539:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-126025:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-126026:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-126029:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-146212:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-167104:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-167149:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-167152:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-167161:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-167168:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-167181:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-167184:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-167185:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-167190:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-167200:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-167201:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-168329:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-168330:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-168331:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-168335:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-168868:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-168908:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-168910:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-189354:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-189862:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-189865:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-189866:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-189873:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-189905:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-189906:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-189908:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+  yahpo-lcbench-189909:
+    - val_accuracy
+    - val_cross_entropy
+    - val_balanced_accuracy
+    - time
+prior_spec:
+  - [good, 0, 0.01, null]
+  - [medium, 0, 0.125, null]
+  - [bad, -1, 0, null]
