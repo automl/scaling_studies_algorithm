@@ -939,6 +939,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         
         return optimal_points
     
+
     def extrapolate(self, trials: Mapping[str, Trial], true_pareto_info: dict) -> dict[str, Any] | None:
         trials_sorted = OrderedDict(sorted(trials.items(), key=lambda item: item[1].metadata.time_sampled))
         extrapolation_results_by_spent_ratio = {}  # Accumulate results for heatmap
@@ -974,7 +975,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         
             extrapolation_data = None
             # try:
-            extrapolation_data = self.extrapolate_for_target_flops(consecutive_trials, list(optimal_points.keys()), spent_flops, optimal_points)
+            extrapolation_data = self.extrapolate_for_target_flops(consecutive_trials, list(optimal_points.keys()), optimal_points)
             if extrapolation_data is not None:
                 extrapolation_results_by_spent_ratio[ratio_center] = extrapolation_data
 
@@ -1025,7 +1026,6 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         self,
         trials: Mapping[str, Trial],
         target_flops: list[float],
-        spent_flops: float,
         optimal_points: dict[float, tuple],
     ) -> dict:
 
@@ -1034,6 +1034,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         logger.info(f"Begin extrapolation")
         logger.info(f"Target FLOPs for extrapolation: {target_flops}")
         
+        spent_flops = sum([self.flops_estimator(**trial.config) for trial in trials.values()])
         # Collect slope/intercept for each method
         slopes_params_param_data = []
         intercepts_params_param_data = []
@@ -1140,7 +1141,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 }
             
             serialized_horizon[float(target_flop)] = serialized_configs
-        
+        print(f"serialized_horizon {serialized_horizon}")
         return {
             'spent_flops': float(spent_flops),
             'max_evaluation_flops': float(self.max_evaluation_flops),

@@ -230,13 +230,21 @@ class CARBSSuggester(ScalingLawGuidedOptimizer, AskFunction):
         Returns:
             List of values in basic space (transformed domain)
         """
-        # real_number_space_by_name = self.get_real_number_space_by_name()
-        # transform_fn_per_param = {k: v.basic_from_param for k, v in real_number_space_by_name.items()}
-        transform_fn_per_param = {param_name: math.log10}
+        try:
+            real_number_space_by_name = self.get_real_number_space_by_name()
+            if param_name in real_number_space_by_name:
+                transform_fn = real_number_space_by_name[param_name].basic_from_param
+                return [float(transform_fn(float(val))) for val in hp_values]
+        except Exception as e:
+            logger.debug(f"Falling back to manual basic-space transform for {param_name}: {e}")
 
-        if param_name not in transform_fn_per_param:
-            raise ValueError(f"No transformation function found for parameter '{param_name}'")
-        return [transform_fn_per_param[param_name](val) for val in hp_values]
+        # Fallback if CARBS checkpoint transform is unavailable.
+        # Only log-transform parameters explicitly marked as log-scale.
+        param = self.space.searchables.get(param_name)
+        if param is not None and getattr(param, "log", False):
+            eps = 1e-12
+            return [math.log10(max(float(val), eps)) for val in hp_values]
+        return [float(val) for val in hp_values]
         
     def _transform_hp_from_basic_space(self, hp_value: float, param_name: str) -> float:
         """Transform hyperparameter value from basic space back to param space.
@@ -248,12 +256,19 @@ class CARBSSuggester(ScalingLawGuidedOptimizer, AskFunction):
         Returns:
             Value in param space (original domain)
         """
-        # real_number_space_by_name = self.get_real_number_space_by_name()
-        # transform_fn_per_param = {k: v.param_from_basic for k, v in real_number_space_by_name.items()}
-        transform_fn_per_param = {param_name: lambda x: 10 ** x}
-        if param_name not in transform_fn_per_param:
-            raise ValueError(f"No transformation function found for parameter '{param_name}'")
-        return transform_fn_per_param[param_name](hp_value)
+        try:
+            real_number_space_by_name = self.get_real_number_space_by_name()
+            if param_name in real_number_space_by_name:
+                transform_fn = real_number_space_by_name[param_name].param_from_basic
+                return float(transform_fn(float(hp_value)))
+        except Exception as e:
+            logger.debug(f"Falling back to manual param-space transform for {param_name}: {e}")
+
+        # Fallback if CARBS checkpoint transform is unavailable.
+        param = self.space.searchables.get(param_name)
+        if param is not None and getattr(param, "log", False):
+            return float(10 ** hp_value)
+        return float(hp_value)
 
     def _find_optimal_hp_value_for_target_flops(
         self,
@@ -321,9 +336,19 @@ class CARBSSuggester(ScalingLawGuidedOptimizer, AskFunction):
             assert len(hp_values_basic) == len(flops_list), \
             f"Length mismatch after transformation for {param_name}"
            
-            valid_flops = flops_list
-            valid_flops = [math.log10(f) for f in valid_flops]
-            valid_hp_basic = hp_values_basic
+            valid_pairs = [
+                (float(f), float(h))
+                for f, h in zip(flops_list, hp_values_basic)
+                if np.isfinite(f) and np.isfinite(h) and f > 0
+            ]
+            if len(valid_pairs) < 2:
+                logger.warning(
+                    f"Not enough valid positive-FLOPs points for {param_name}: {len(valid_pairs)}"
+                )
+                continue
+
+            valid_flops = [math.log10(f) for f, _ in valid_pairs]
+            valid_hp_basic = [h for _, h in valid_pairs]
             
             fit_result = self._fit_linear_line(valid_flops, valid_hp_basic)
             if fit_result is None:

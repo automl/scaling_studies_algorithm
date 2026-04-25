@@ -19,6 +19,7 @@ class BenchmarkConfig:
     max_evaluation_flops: float
     aspect_ratio_fn: Callable
     data_parameter_name: str
+    max_flops: float | None = None
 
 def get_benchmark(benchmark: BenchmarkEnum, lc_aware: bool) -> BenchmarkConfig:
     match benchmark:
@@ -37,6 +38,7 @@ def get_benchmark(benchmark: BenchmarkEnum, lc_aware: bool) -> BenchmarkConfig:
                 max_evaluation_flops=total_eval_flops,
                 aspect_ratio_fn=openclip.aspect_ratio_fn,
                 data_parameter_name="train_num_samples",
+                max_flops=max_flops,
             )
         case BenchmarkEnum.LLM:
             bench = llm.get_benchmark()
@@ -54,6 +56,7 @@ def get_benchmark(benchmark: BenchmarkEnum, lc_aware: bool) -> BenchmarkConfig:
                 max_evaluation_flops=total_eval_flops,
                 aspect_ratio_fn=llm.aspect_ratio_fn,
                 data_parameter_name="n_tokens",
+                max_flops=max_flops,
             )
         case _:
             raise Exception("Benchmark not found")

@@ -1,16 +1,172 @@
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import matplotlib.pyplot as plt
+import string
 
 import neps
 from neps.state.trial import State
 from src.plotting.plot_styles import OPTIMIZER_COLORS
 
+plt.rcParams.update({
+    "font.family": "serif",        # Forces Times-style font
+    "font.size": 10,               # Base font size
+    "axes.labelsize": 10,          # X and Y labels
+    "xtick.labelsize": 8,          # X-axis numbers
+    "ytick.labelsize": 8,          # Y-axis numbers
+    "legend.fontsize": 8,          # Legend labels
+    "figure.figsize": (5.5, 3.5),  # Fits the exact width of a NeurIPS page
+    "pdf.fonttype": 42,            # Ensures fonts render correctly in the final PDF
+    "ps.fonttype": 42
+})
+
+OPTIMIZER_LABELS: dict[str, str] = {
+    "random_search": "Random Search",
+    "random_search_with_priors": "Random Search (with priors)",
+    "chinchilla_approach1": "Chinchilla A1",
+    "chinchilla_approach1_with_priors": "Chinchilla A1 (with priors)",
+    "chinchilla_approach2": "Chinchilla A2",
+    "chinchilla_approach2_with_priors": "Chinchilla A2 (with priors)",
+    "carbs": "CARBS",
+    "carbs_with_priors": "CARBS (with priors)",
+}
+
 
 def get_optimizer_color(opt_name: str) -> str:
     """Get color for optimizer, with fallback to default."""
     return OPTIMIZER_COLORS.get(opt_name, OPTIMIZER_COLORS["default"])
+
+
+def get_optimizer_linestyle(opt_name: str) -> str:
+    """Get linestyle for optimizer: dashed for _with_priors variants, solid otherwise."""
+    return "--" if "_with_priors" in opt_name else "-"
+
+
+def get_optimizer_label(opt_name: str) -> str:
+    """Get display label for optimizer used in plot legends."""
+    if opt_name in OPTIMIZER_LABELS:
+        return OPTIMIZER_LABELS[opt_name]
+
+    label = opt_name.replace("_with_priors", " (with priors)").replace("_", " ").strip()
+    return " ".join(token.upper() if token.lower() == "carbs" else token.capitalize() for token in label.split())
+
+
+def _split_optimizers_by_priors(
+    optimizers: dict[str, list[Any]],
+) -> tuple[dict[str, list[Any]], dict[str, list[Any]], dict[str, list[Any]]]:
+    with_priors = {k: v for k, v in optimizers.items() if "_with_priors" in k}
+    without_priors = {k: v for k, v in optimizers.items() if "_with_priors" not in k}
+    return dict(optimizers), with_priors, without_priors
+
+
+def _placeholder_plot(
+    *,
+    figsize: tuple[int, int],
+    title: str,
+    xlabel: str,
+    ylabel: str,
+) -> tuple[Any, Any]:
+    fig, ax = plt.subplots(figsize=figsize)
+    # ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.set_xlabel(xlabel, fontsize=13)
+    ax.set_ylabel(ylabel, fontsize=13)
+    ax.text(0.5, 0.5, "No optimizers in this group", ha="center", va="center", transform=ax.transAxes)
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+    return fig, ax
+
+
+def _get_global_flop_bounds(flop_grids: list[np.ndarray]) -> tuple[float, float] | None:
+    """Compute shared positive FLOP bounds used for log-based normalization."""
+    positive = [grid[grid > 1e-8] for grid in flop_grids if len(grid[grid > 1e-8]) > 0]
+    if not positive:
+        return None
+    min_flop = min(float(np.min(vals)) for vals in positive)
+    max_flop = max(float(np.max(vals)) for vals in positive)
+    return min_flop, max_flop
+
+
+def _normalize_flop_counts(
+    flop_counts: np.ndarray,
+    min_flop: float,
+    max_flop: float,
+) -> np.ndarray:
+    """Normalize FLOPs to [0, 1] in log-space for cross-benchmark comparability."""
+    positive_mask = flop_counts > 1e-8
+    if np.isclose(min_flop, max_flop):
+        normalized = np.ones_like(flop_counts, dtype=float) * 0.5
+        normalized[~positive_mask] = 0.0
+        return normalized
+
+    normalized = np.zeros_like(flop_counts, dtype=float)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        normalized[positive_mask] = (
+            (np.log10(flop_counts[positive_mask]) - np.log10(min_flop))
+            / (np.log10(max_flop) - np.log10(min_flop))
+        )
+    normalized[~positive_mask] = 0.0
+    return np.clip(normalized, 0.0, 1.0)
+
+
+def _get_common_xlim(
+    x_series: list[np.ndarray],
+    default: tuple[float, float] = (0.0, 1.0),
+) -> tuple[float, float]:
+    """Return shared x-range intersection across non-empty curves."""
+    if not x_series:
+        return default
+
+    starts: list[float] = []
+    ends: list[float] = []
+    for xs in x_series:
+        if len(xs) == 0:
+            continue
+        starts.append(float(xs[0]))
+        ends.append(float(xs[-1]))
+
+    if not starts or not ends:
+        return default
+
+    left = max(starts)
+    right = min(ends)
+    if left >= right:
+        return default
+    return (left, right)
+
+
+def _replot_lines(source_ax: Any, target_ax: Any) -> None:
+    """Re-plot lines and fill_between bands from source axis to target axis."""
+    for line in source_ax.get_lines():
+        target_ax.plot(
+            np.asarray(line.get_xdata(), dtype=float),
+            np.asarray(line.get_ydata(), dtype=float),
+            label=line.get_label(),
+            color=line.get_color(),
+            linestyle=line.get_linestyle(),
+            linewidth=line.get_linewidth(),
+            marker=line.get_marker(),
+            markersize=line.get_markersize(),
+            alpha=line.get_alpha(),
+        )
+
+    # Recreate confidence bands from PolyCollection paths generated by fill_between.
+    for collection in source_ax.collections:
+        paths = collection.get_paths()
+        facecolors = collection.get_facecolors()
+        if len(paths) == 0 or len(facecolors) == 0:
+            continue
+
+        band_color = tuple(facecolors[0])
+        for path in paths:
+            verts = np.asarray(path.vertices, dtype=float)
+            if verts.shape[0] < 3:
+                continue
+            target_ax.fill(
+                verts[:, 0],
+                verts[:, 1],
+                facecolor=band_color,
+                edgecolor="none",
+            )
 
 
 def process_seed(
@@ -53,8 +209,8 @@ def process_seed(
             # Keep NaN/inf values as NaN for post-processing
             if np.isinf(loss):
                 loss = np.nan
-            elif '_acc' in loss_key or 'recall' in loss_key:
-                loss = 1.0 - loss
+            # elif '_acc' in loss_key or 'recall' in loss_key:
+            #     loss = 1.0 - loss
         except (ValueError, TypeError): # Handle NaN, NA, and inf values
             loss = np.nan
         losses.append(loss)
@@ -84,6 +240,7 @@ def process_optimizer_per_seed(
     key_to_extract: str | None = None,
     loss_key: str = "objective_to_minimize",
     log_scale: bool = False,
+    interpolate: bool = True,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], dict[int, np.ndarray]]:
     """
     Process all seeds for an optimizer, keeping per-seed data.
@@ -94,10 +251,12 @@ def process_optimizer_per_seed(
         seeds: List of seed values to process
         key_to_extract: Key to extract from results as cost (typically 'flopcount')
         log_scale: Whether to interpolate on log scale for flop counts
+        interpolate: Whether to interpolate losses onto a shared 100-point FLOP grid
     
     Returns:
-        flop_grid: Common flop count grid (x-axis)
-        per_seed_losses_dict: Dict mapping seed -> interpolated losses
+        flop_grid: Common flop count grid (x-axis). If interpolate=False, this is
+            the raw cumulative-cost axis for the first valid seed.
+        per_seed_losses_dict: Dict mapping seed -> losses (interpolated or raw)
         per_seed_costs_dict: Dict mapping seed -> per-sample cumulative costs
     """
     base_path = Path(base_path)
@@ -105,50 +264,61 @@ def process_optimizer_per_seed(
     
     all_seeds_data = []
     valid_seeds = []
+    flop_scale = 1e9 if "openclip" in str(base_path).lower() else 1.0
     
     # Process each seed
     for seed in seeds:
-        try:
-            losses, costs, max_cost = process_seed(
-                path=optimizer_path,
-                seed=seed,
-                key_to_extract=key_to_extract,
-                loss_key=loss_key,
-            )
-            all_seeds_data.append({"losses": losses, "costs": costs, "max_cost": max_cost})
-            valid_seeds.append(seed)
-        except Exception as e:
-            print(f"Warning: Could not process {optimizer_name} seed {seed}: {e}")
-            continue
+        # try:
+        losses, costs, max_cost = process_seed(
+            path=optimizer_path,
+            seed=seed,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+        )
+        all_seeds_data.append({"losses": losses, "costs": [c * flop_scale for c in costs], "max_cost": max_cost * flop_scale})
+        valid_seeds.append(seed)
+        # except Exception as e:
+        #     print(f"Warning: Could not process {optimizer_name} seed {seed}: {e}")
+        #     continue
     
     if not all_seeds_data:
         raise ValueError(f"No valid seeds found for optimizer {optimizer_name}")
     
-    # Create common grid for interpolation
-    max_cost_overall = max(d["max_cost"] for d in all_seeds_data)
-    
-    if log_scale:
-        # Log scale interpolation
-        flop_grid = np.logspace(
-            np.log10(min(c[0] for d in all_seeds_data for c in [d["costs"]] if c)),
-            np.log10(max_cost_overall),
-            num=100
-        )
-    else:
-        # Linear scale interpolation
-        flop_grid = np.linspace(0, max_cost_overall, num=100)
-    
     per_seed_losses = {}
     per_seed_costs = {}
-    
+
+    if interpolate:
+        # Create common grid for interpolation
+        max_cost_overall = max(d["max_cost"] for d in all_seeds_data)
+
+        if log_scale:
+            # Log scale interpolation
+            flop_grid = np.logspace(
+                np.log10(min(c[0] for d in all_seeds_data for c in [d["costs"]] if c)),
+                np.log10(max_cost_overall),
+                num=100
+            )
+        else:
+            # Linear scale interpolation
+            flop_grid = np.linspace(0, max_cost_overall, num=100)
+    else:
+        flop_grid = np.array([], dtype=float)
+
     for seed, seed_data in zip(valid_seeds, all_seeds_data):
         costs = np.array(seed_data["costs"])
         losses = np.array(seed_data["losses"])
-        
-        # Interpolate to common grid
-        interp_losses = np.interp(flop_grid, costs, losses, left=losses[0], right=losses[-1])
-        per_seed_losses[seed] = interp_losses
+
+        if interpolate:
+            # Interpolate to common grid
+            interp_losses = np.interp(flop_grid, costs, losses, left=losses[0], right=losses[-1])
+            per_seed_losses[seed] = interp_losses
+        else:
+            per_seed_losses[seed] = losses
         per_seed_costs[seed] = costs
+
+    if not interpolate:
+        # Keep exact trial count/order for downstream uses such as extrapolation.
+        flop_grid = per_seed_costs[valid_seeds[0]].astype(float)
     
     return flop_grid, per_seed_losses, per_seed_costs
 
@@ -157,22 +327,32 @@ def process_optimizer(
     *,
     base_path: str | Path,
     optimizer_name: str,
-    seeds: list[int | str],
+    seeds: list[int] | list[int | str],
     key_to_extract: str | None = None,
     loss_key: str = "objective_to_minimize",
     log_scale: bool = False,
+    interpolate: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    flop_grid, per_seed_losses, _ = process_optimizer_per_seed(
+    flop_grid, per_seed_losses, per_seed_costs = process_optimizer_per_seed(
         base_path=base_path,
         optimizer_name=optimizer_name,
         seeds=seeds,
         key_to_extract=key_to_extract,
         loss_key=loss_key,
         log_scale=log_scale,
+        interpolate=interpolate,
     )
-    
+
     # Stack per-seed losses and calculate mean/standard error
-    interpolated_losses_array = np.array(list(per_seed_losses.values()))
+    if interpolate:
+        interpolated_losses_array = np.array(list(per_seed_losses.values()))
+    else:
+        # Align raw per-seed losses by trial index to preserve exact trial count.
+        # Different seeds may have different numbers of trials; trim to shared prefix.
+        min_len = min(len(v) for v in per_seed_losses.values())
+        interpolated_losses_array = np.array([v[:min_len] for v in per_seed_losses.values()])
+        first_seed = next(iter(per_seed_costs))
+        flop_grid = per_seed_costs[first_seed][:min_len]
     
     # Use nanmean and nanstd to ignore NaN values
     mean_losses = np.nanmean(interpolated_losses_array, axis=0)
@@ -191,14 +371,16 @@ def process_optimizer(
 def plot_optimizer_loss(
     *,
     base_path: str | Path,
-    optimizers: dict[str, list[int]],
+    optimizers: dict[str, list[int]] | dict[str, list[int | str]],
     key_to_extract: str | None = None,
     loss_key: str = "objective_to_minimize",
     log_scale: bool = False,
     figsize: tuple[int, int] = (10, 6),
     title: str = "Loss Over Optimization",
-    max_flops: float | None = None,
-):
+    flop_range: tuple[float, float] | None = None,
+    normalize_flops: bool = True,
+    return_split: bool = True,
+) -> Any:
     """
     Plot loss over FLOPs for multiple optimizers with confidence bands.
     
@@ -211,17 +393,88 @@ def plot_optimizer_loss(
         log_scale: Whether to use log scale for x-axis
         figsize: Figure size
         title: Plot title
-        max_flops: Maximum FLOPs to display on x-axis (trims data beyond this)
+        flop_range: Tuple (min_flops, max_flops) to display on x-axis (trims data outside this range)
     
     Returns:
         fig: Matplotlib figure
         ax: Axes object
     """
+    if return_split:
+        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
+
+        fig_all, ax_all = cast(tuple[Any, Any], plot_optimizer_loss(
+            base_path=base_path,
+            optimizers=all_opts,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            log_scale=log_scale,
+            figsize=figsize,
+            title=title,
+            flop_range=flop_range,
+            normalize_flops=normalize_flops,
+            return_split=False,
+        ))
+
+        if with_priors:
+            fig_with, ax_with = cast(tuple[Any, Any], plot_optimizer_loss(
+                base_path=base_path,
+                optimizers=with_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                log_scale=log_scale,
+                figsize=figsize,
+                title=f"{title} (with priors)",
+                flop_range=flop_range,
+                normalize_flops=normalize_flops,
+                return_split=False,
+            ))
+        else:
+            fig_with, ax_with = _placeholder_plot(
+                figsize=figsize,
+                title=f"{title} (with priors)",
+                xlabel="Normalized FLOPs (log scale)" if normalize_flops else "FLOPs (log scale)",
+                ylabel="Average Loss",
+            )
+
+        if without_priors:
+            fig_without, ax_without = cast(tuple[Any, Any], plot_optimizer_loss(
+                base_path=base_path,
+                optimizers=without_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                log_scale=log_scale,
+                figsize=figsize,
+                title=f"{title} (without priors)",
+                flop_range=flop_range,
+                normalize_flops=normalize_flops,
+                return_split=False,
+            ))
+        else:
+            fig_without, ax_without = _placeholder_plot(
+                figsize=figsize,
+                title=f"{title} (without priors)",
+                xlabel="Normalized FLOPs (log scale)" if normalize_flops else "FLOPs (log scale)",
+                ylabel="Average Loss",
+            )
+
+        return (fig_all, ax_all), (fig_with, ax_with), (fig_without, ax_without)
+
     fig, ax = plt.subplots(figsize=figsize)
+
+    normalized_range = (
+        flop_range is not None
+        and 0.0 <= flop_range[0] <= 1.0
+        and 0.0 <= flop_range[1] <= 1.0
+    )
+    effective_flop_range = flop_range if (not normalize_flops or normalized_range) else None
     
-    # Process all optimizers
+    # First pass: collect all data.
+    all_data = []
+    all_flop_grids: list[np.ndarray] = []
+    
     for opt_name, seeds in optimizers.items():
         color = get_optimizer_color(opt_name)
+        linestyle = get_optimizer_linestyle(opt_name)
         
         flop_counts, mean_losses, std_losses = process_optimizer(
             base_path=base_path,
@@ -232,44 +485,106 @@ def plot_optimizer_loss(
             log_scale=log_scale,
         )
         
-        # Trim data to max_flops if specified
-        if max_flops is not None:
-            mask = flop_counts <= max_flops
-            flop_counts = flop_counts[mask]
-            mean_losses = mean_losses[mask]
-            std_losses = std_losses[mask]
-        
-        # Plot mean loss
-        ax.plot(
-            flop_counts,
-            mean_losses,
-            label=opt_name,
-            color=color,
-            linewidth=2.5,
-        )
-        
-        # Add confidence band (standard error)
-        ax.fill_between(
-            flop_counts,
-            mean_losses - std_losses,
-            mean_losses + std_losses,
-            alpha=0.2,
-            color=color,
-        )
+        if len(flop_counts) > 0:
+            all_data.append({
+                'opt_name': opt_name,
+                'color': color,
+                'linestyle': linestyle,
+                'flop_counts': flop_counts,
+                'mean_losses': mean_losses,
+                'std_losses': std_losses,
+            })
+            all_flop_grids.append(flop_counts)
+
+    if normalize_flops:
+        bounds = _get_global_flop_bounds(all_flop_grids)
+        if bounds is not None:
+            min_flop, max_flop = bounds
+            for data in all_data:
+                data['flop_counts'] = _normalize_flop_counts(data['flop_counts'], min_flop, max_flop)
+
+    # Optional trim after potential normalization.
+    if effective_flop_range is not None:
+        for data in all_data:
+            flop_counts = data['flop_counts']
+            mean_losses = data['mean_losses']
+            std_losses = data['std_losses']
+            min_flops, max_flops = effective_flop_range
+            mask = (flop_counts >= min_flops) & (flop_counts <= max_flops)
+            data['flop_counts'] = flop_counts[mask]
+            data['mean_losses'] = mean_losses[mask]
+            data['std_losses'] = std_losses[mask]
+
+    # Find common start among available curves.
+    all_first_flops = []
+    for data in all_data:
+        flop_counts = data['flop_counts']
+        non_zero_flops = flop_counts[flop_counts > 1e-8]
+        if len(non_zero_flops) > 0:
+            all_first_flops.append(float(non_zero_flops[0]))
     
-    ax.set_xlabel("FLOPs", fontsize=12)
-    ax.set_ylabel("Loss", fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight="bold")
-    ax.grid(True, alpha=0.3)
-    ax.set_xscale("log")
-    ax.set_yscale("log")
+    # Calculate common starting point (max of all first flops, excluding 0.0)
+    common_start = max(all_first_flops) if all_first_flops else 0
     
-    # Place legend below
+    # Second pass: plot with common starting point
+    x_lim_min = [0.0]
+    x_lim_max = [1.0]
+    for data in all_data:
+        flop_counts = data['flop_counts']
+        mean_losses = data['mean_losses']
+        std_losses = data['std_losses']
+        
+        # Trim data to common_start
+        mask = flop_counts >= common_start - 1e-8
+        flop_counts = flop_counts[mask]
+        mean_losses = mean_losses[mask]
+        std_losses = std_losses[mask]
+        
+        # Ensure all lines start from common_start by prepending first value if needed
+        if len(flop_counts) > 0 and flop_counts[0] > common_start + 1e-8:
+            flop_counts = np.concatenate([[common_start], flop_counts])
+            mean_losses = np.concatenate([[mean_losses[0]], mean_losses])
+            std_losses = np.concatenate([[std_losses[0]], std_losses])
+        
+        if len(flop_counts) > 0:
+            # Plot mean loss
+            ax.plot(
+                flop_counts,
+                mean_losses,
+                label=get_optimizer_label(data['opt_name']),
+                color=data['color'],
+                linestyle=data['linestyle'],
+                linewidth=2.5,
+            )
+            x_lim_min.append(flop_counts[0])
+            x_lim_max.append(flop_counts[-1])
+            
+            # Add confidence band (standard error)
+            ax.fill_between(
+                flop_counts,
+                mean_losses - std_losses,
+                mean_losses + std_losses,
+                alpha=0.2,
+                color=data['color'],
+            )
+    
+    ax.set_xlabel("Normalized FLOPs (log scale)" if normalize_flops else "FLOPs (log scale)", fontsize=13)
+    if effective_flop_range is not None:
+        ax.set_xlim(effective_flop_range[0], effective_flop_range[1])
+    elif normalize_flops:
+        ax.set_xlim(max(x_lim_min), min(x_lim_max))
+    ax.set_ylabel("Average Loss", fontsize=13)
+    # ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+    if not normalize_flops:
+        ax.set_xscale("log")
+    
+    # Place legend below with reduced padding
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.15), 
-               ncol=min(4, len(optimizers)), fontsize=11, frameon=True)
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), 
+               ncol=min(4, len(optimizers)), fontsize=10, frameon=True)
     
-    plt.tight_layout(rect=[0, 0.15, 1, 1])
+    plt.tight_layout(rect=[0, 0.10, 1, 1])
     
     return fig, ax
 
@@ -281,6 +596,7 @@ def calculate_rankings(
     key_to_extract: str | None = None,
     loss_key: str = "objective_to_minimize",
     log_scale: bool = False,
+    ranking_metric: str = "incumbent",
 ) -> dict[str, dict]:
     """
     Calculate relative rankings across optimizers at each cost point using per-seed data.
@@ -297,6 +613,10 @@ def calculate_rankings(
         rankings: Dict with optimizer names as keys
                 Values: dicts with 'flop_counts', 'mean_ranks', 'std_ranks'
     """
+    ranking_metric = ranking_metric.lower()
+    if ranking_metric not in {"incumbent", "hypervolume"}:
+        raise ValueError("ranking_metric must be either 'incumbent' or 'hypervolume'")
+
     # Get per-seed data for all optimizers
     all_per_seed_data = {}
     for opt_name, seeds in optimizers.items():
@@ -308,9 +628,27 @@ def calculate_rankings(
             loss_key=loss_key,
             log_scale=log_scale,
         )
+
+        per_seed_values = per_seed_losses
+        if ranking_metric == "hypervolume":
+            from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer
+
+            per_seed_hvs = {}
+            for seed, losses in per_seed_losses.items():
+                res = ScalingLawGuidedOptimizer.compute_normalized_search_hypervolume(
+                    losses.tolist(),
+                    flop_grid.tolist(),
+                )
+                if res is None:
+                    per_seed_hvs[seed] = np.full_like(losses, np.nan, dtype=float)
+                else:
+                    _, hvs = res
+                    per_seed_hvs[seed] = np.array(hvs, dtype=float)
+            per_seed_values = per_seed_hvs
+
         all_per_seed_data[opt_name] = {
             "flop_grid": flop_grid,
-            "per_seed_losses": per_seed_losses,
+            "per_seed_values": per_seed_values,
         }
     
     # Calculate rankings per seed, then aggregate
@@ -318,40 +656,40 @@ def calculate_rankings(
     
     for opt_name, data in all_per_seed_data.items():
         flop_grid = data["flop_grid"]
-        per_seed_losses = data["per_seed_losses"]
+        per_seed_values = data["per_seed_values"]
         
         # Calculate ranking for each seed
         seed_rankings_list = []
         
-        for seed, losses in per_seed_losses.items():
+        for seed, values in per_seed_values.items():
             seed_ranks = []
             
             for i in range(len(flop_grid)):
-                # Get losses from all optimizers at this flop index
-                losses_at_idx = []
+                # Get values from all optimizers at this flop index
+                values_at_idx = []
                 for other_opt in all_per_seed_data.keys():
                     try:
-                        other_losses = all_per_seed_data[other_opt]["per_seed_losses"][seed]
+                        other_values = all_per_seed_data[other_opt]["per_seed_values"][seed]
                     except KeyError as e:
                         print(f"other_opt {other_opt} does not have seed {seed}, skipping for ranking at index {i}")
                         raise e
-                    if i < len(other_losses):
-                        losses_at_idx.append(other_losses[i])
+                    if i < len(other_values):
+                        values_at_idx.append(other_values[i])
                 
-                # Rank this optimizer (lower loss = rank 1)
-                if losses_at_idx:
-                    # Filter out NaN values for ranking
-                    valid_losses_at_idx = [l for l in losses_at_idx if not np.isnan(l)]
-                    
-                    current_loss = losses[i]
-                    if np.isnan(current_loss):
-                        # If current loss is NaN, assign worst rank
-                        rank = len(valid_losses_at_idx) + 1
-                    elif valid_losses_at_idx:
-                        # Count how many valid losses are better (lower)
-                        rank = sum(1 for l in valid_losses_at_idx if l < current_loss) + 1
+                # Rank this optimizer.
+                # incumbent: lower is better; hypervolume: higher is better.
+                if values_at_idx:
+                    valid_values_at_idx = [v for v in values_at_idx if not np.isnan(v)]
+
+                    current_value = values[i]
+                    if np.isnan(current_value):
+                        rank = len(valid_values_at_idx) + 1
+                    elif valid_values_at_idx:
+                        if ranking_metric == "incumbent":
+                            rank = sum(1 for v in valid_values_at_idx if v < current_value) + 1
+                        else:
+                            rank = sum(1 for v in valid_values_at_idx if v > current_value) + 1
                     else:
-                        # All other losses are NaN
                         rank = 1
                     
                     seed_ranks.append(rank)
@@ -374,6 +712,150 @@ def calculate_rankings(
     return rankings
 
 
+def calculate_normalized_rankings(
+    *,
+    base_path: str | Path,
+    optimizers: dict[str, list[int | str]],
+    key_to_extract: str | None = None,
+    loss_key: str = "objective_to_minimize",
+    log_scale: bool = False,
+    ranking_metric: str = "incumbent",
+) -> dict[str, dict]:
+    """
+    Calculate relative rankings with normalized flop counts for cross-benchmark comparison.
+    """
+    ranking_metric = ranking_metric.lower()
+    if ranking_metric not in {"incumbent", "hypervolume"}:
+        raise ValueError("ranking_metric must be either 'incumbent' or 'hypervolume'")
+
+    # Get per-seed data for all optimizers
+    all_per_seed_data = {}
+    all_flop_grids = []
+    for opt_name, seeds in optimizers.items():
+        flop_grid, per_seed_losses, _ = process_optimizer_per_seed(
+            base_path=base_path,
+            optimizer_name=opt_name,
+            seeds=seeds,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            log_scale=log_scale,
+        )
+
+        per_seed_values = per_seed_losses
+        if ranking_metric == "hypervolume":
+            from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer
+
+            per_seed_hvs = {}
+            for seed, losses in per_seed_losses.items():
+                res = ScalingLawGuidedOptimizer.compute_normalized_search_hypervolume(
+                    losses.tolist(),
+                    flop_grid.tolist(),
+                )
+                if res is None:
+                    per_seed_hvs[seed] = np.full_like(losses, np.nan, dtype=float)
+                else:
+                    _, hvs = res
+                    per_seed_hvs[seed] = np.array(hvs, dtype=float)
+            per_seed_values = per_seed_hvs
+
+        all_per_seed_data[opt_name] = {
+            "flop_grid": flop_grid,
+            "per_seed_values": per_seed_values,
+        }
+        all_flop_grids.append(flop_grid)
+
+    if not all_flop_grids:
+        return {}
+
+    # Normalize flop grid for the benchmark using log scale
+    min_flop = min(grid[grid > 1e-8][0] for grid in all_flop_grids if len(grid[grid > 1e-8]) > 0)
+    max_flop = max(grid.max() for grid in all_flop_grids)
+    
+    # Handle edge case where min_flop == max_flop
+    if np.isclose(min_flop, max_flop):
+        # All flops are essentially the same, no normalization needed
+        normalized_flop_grid_scaled = np.ones(100) * 0.5  # Middle value
+        normalized_flop_grid = np.linspace(min_flop, max_flop, 100)
+    else:
+        # Create normalized grid in log space
+        normalized_flop_grid = np.logspace(
+            np.log10(min_flop), np.log10(max_flop), num=100
+        )
+        # Normalize to 0-1 range for consistency
+        normalized_flop_grid_scaled = (np.log10(normalized_flop_grid) - np.log10(min_flop)) / (np.log10(max_flop) - np.log10(min_flop))
+
+    rankings = {}
+    for opt_name, data in all_per_seed_data.items():
+        original_flop_grid = data["flop_grid"]
+        per_seed_values = data["per_seed_values"]
+
+        # Filter original flop grid to only positive values for log scaling
+        positive_mask = original_flop_grid > 1e-8
+        if not positive_mask.any():
+            continue
+            
+        # Normalize original flop grid using log scale (only for positive values)
+        if np.isclose(min_flop, max_flop):
+            original_normalized_flops = np.ones_like(original_flop_grid) * 0.5
+        else:
+            with np.errstate(divide='ignore', invalid='ignore'):
+                original_normalized_flops = np.zeros_like(original_flop_grid)
+                original_normalized_flops[positive_mask] = (
+                    (np.log10(original_flop_grid[positive_mask]) - np.log10(min_flop)) / 
+                    (np.log10(max_flop) - np.log10(min_flop))
+                )
+                # Set non-positive values to -inf (will be filtered out)
+                original_normalized_flops[~positive_mask] = -np.inf
+        
+        seed_rankings_list = []
+        for seed, values in per_seed_values.items():
+            seed_ranks = []
+            for i in range(len(original_flop_grid)):
+                values_at_idx = []
+                for other_opt in all_per_seed_data.keys():
+                    try:
+                        other_values = all_per_seed_data[other_opt]["per_seed_values"][seed]
+                        if i < len(other_values):
+                            values_at_idx.append(other_values[i])
+                    except KeyError:
+                        continue
+                
+                valid_values_at_idx = [v for v in values_at_idx if not np.isnan(v)]
+                current_value = values[i]
+                if np.isnan(current_value):
+                    rank = len(valid_values_at_idx) + 1
+                elif valid_values_at_idx:
+                    if ranking_metric == "incumbent":
+                        rank = sum(1 for v in valid_values_at_idx if v < current_value) + 1
+                    else:
+                        rank = sum(1 for v in valid_values_at_idx if v > current_value) + 1
+                else:
+                    rank = 1
+                seed_ranks.append(rank)
+            
+            # Interpolate this seed's ranks onto the common normalized grid
+            interp_ranks = np.interp(normalized_flop_grid_scaled, original_normalized_flops, seed_ranks)
+            seed_rankings_list.append(interp_ranks)
+        
+        if not seed_rankings_list:
+            continue
+
+        seed_rankings_array = np.array(seed_rankings_list)
+        mean_ranks = np.mean(seed_rankings_array, axis=0)
+        std_ranks = np.std(seed_rankings_array, axis=0)
+        se_ranks = std_ranks / np.sqrt(len(seed_rankings_list))
+        
+        rankings[opt_name] = {
+            "flop_counts": normalized_flop_grid,
+            "flop_counts_scaled": normalized_flop_grid_scaled,
+            "mean_ranks": mean_ranks,
+            "std_ranks": se_ranks,
+            "seed_ranks": seed_rankings_list
+        }
+        
+    return rankings
+
+
 def calculate_hypervolumes(
     *,
     base_path: str | Path,
@@ -383,25 +865,12 @@ def calculate_hypervolumes(
     log_scale: bool = False,
 ) -> dict[str, dict]:
     """
-    Calculate hypervolume per-seed, then aggregate with mean/std.
-    
-    Reference point is dynamically set to (max_cost, max_loss) across all optimizers.
-    
-    Args:
-        base_path: Base path where optimizer directories are located
-        optimizers: Dict mapping optimizer name to list of seeds
-        key_to_extract: Key to extract from results as cost
-        log_scale: Whether to use log scale
-    
-    Returns:
-        hvs_dict: Dict with optimizer names as keys
-                Values: dicts with 'flop_counts', 'mean_hvs', 'std_hvs'
+    Calculate hypervolume with normalized flop counts for cross-benchmark comparison.
     """
     from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer
     
-    # First pass: collect all costs and losses to determine reference point
-    max_cost = -1.0
-    max_loss = -1.0
+    # First pass: collect per-seed data and all flop grids for normalization.
+    all_flop_grids: list[np.ndarray] = []
     all_per_seed_data = {}
     
     for opt_name, seeds in optimizers.items():
@@ -417,31 +886,27 @@ def calculate_hypervolumes(
             "flop_grid": flop_grid,
             "per_seed_losses": per_seed_losses,
         }
-        
-        # Track max cost and loss
-        for seed, losses in per_seed_losses.items():
-            max_cost = max(max_cost, flop_grid[-1])  # Last element is max flop
-            max_loss = max(max_loss, float(np.max(losses)))
-    
-    # Use dynamic reference point (max_cost, max_loss)
-    ref_point = (max_cost, max_loss)
+        if len(flop_grid) > 0:
+            all_flop_grids.append(flop_grid)
+
+    bounds = _get_global_flop_bounds(all_flop_grids)
     
     hvs_dict = {}
-    
+
     # Second pass: calculate hypervolume with dynamic reference point
     for opt_name, data in all_per_seed_data.items():
         flop_grid = data["flop_grid"]
         per_seed_losses = data["per_seed_losses"]
         
-        # Calculate hypervolume per seed
         seed_hvs_list = []
         
         for seed, losses in per_seed_losses.items():
-            hvs = ScalingLawGuidedOptimizer._compute_hypervolume_over_accumulated_flops(
+            res = ScalingLawGuidedOptimizer.compute_normalized_search_hypervolume(
                 losses.tolist(), 
                 flop_grid.tolist(),
-                ref_point=ref_point
             )
+            assert res is not None
+            _, hvs = res
             seed_hvs_list.append(np.array(hvs))
         
         # Aggregate across seeds
@@ -449,14 +914,13 @@ def calculate_hypervolumes(
         mean_hvs = np.nanmean(seed_hvs_array, axis=0)
         std_hvs = np.nanstd(seed_hvs_array, axis=0)
         
-        # Count valid (non-NaN) values for each position
         valid_counts = np.sum(~np.isnan(seed_hvs_array), axis=0)
-        # Avoid division by zero
         valid_counts = np.maximum(valid_counts, 1)
         se_hvs = std_hvs / np.sqrt(valid_counts)
         
         hvs_dict[opt_name] = {
             "flop_counts": flop_grid,
+            "norm_flops": _normalize_flop_counts(flop_grid, bounds[0], bounds[1]) if bounds is not None else flop_grid,
             "mean_hvs": mean_hvs.astype(float),
             "std_hvs": se_hvs.astype(float),
         }
@@ -467,14 +931,16 @@ def calculate_hypervolumes(
 def plot_hypervolume_over_flops(
     *,
     base_path: str | Path,
-    optimizers: dict[str, list[int | str]],
+    optimizers: dict[str, list[int]] | dict[str, list[int | str]],
     key_to_extract: str | None = None,
     loss_key: str = "objective_to_minimize",
     log_scale: bool = False,
     figsize: tuple[int, int] = (10, 6),
     title: str = "Hypervolume Over Optimization",
-    max_flops: float | None = None,
-):
+    flop_range: tuple[float, float] | None = None,
+    normalize_flops: bool = True,
+    return_split: bool = True,
+) -> Any:
     """
     Plot hypervolume with mean and std bands (calculated per-seed).
     
@@ -485,13 +951,80 @@ def plot_hypervolume_over_flops(
         log_scale: Whether to use log scale for x-axis
         figsize: Figure size
         title: Plot title
-        max_flops: Maximum FLOPs to display on x-axis (trims data beyond this)
+        flop_range: Tuple (min_flops, max_flops) to display on x-axis (trims data outside this range)
     
     Returns:
         fig: Matplotlib figure
         ax: Axes object
     """
+    if return_split:
+        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
+
+        fig_all, ax_all = cast(tuple[Any, Any], plot_hypervolume_over_flops(
+            base_path=base_path,
+            optimizers=all_opts,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            log_scale=log_scale,
+            figsize=figsize,
+            title=title,
+            flop_range=flop_range,
+            normalize_flops=normalize_flops,
+            return_split=False,
+        ))
+
+        if with_priors:
+            fig_with, ax_with = cast(tuple[Any, Any], plot_hypervolume_over_flops(
+                base_path=base_path,
+                optimizers=with_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                log_scale=log_scale,
+                figsize=figsize,
+                title=f"{title} (with priors)",
+                flop_range=flop_range,
+                normalize_flops=normalize_flops,
+                return_split=False,
+            ))
+        else:
+            fig_with, ax_with = _placeholder_plot(
+                figsize=figsize,
+                title=f"{title} (with priors)",
+                xlabel="Normalized FLOPs (log scale)" if normalize_flops else "FLOPs (log scale)",
+                ylabel="Average Normalized Pareto Hypervolume",
+            )
+
+        if without_priors:
+            fig_without, ax_without = cast(tuple[Any, Any], plot_hypervolume_over_flops(
+                base_path=base_path,
+                optimizers=without_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                log_scale=log_scale,
+                figsize=figsize,
+                title=f"{title} (without priors)",
+                flop_range=flop_range,
+                normalize_flops=normalize_flops,
+                return_split=False,
+            ))
+        else:
+            fig_without, ax_without = _placeholder_plot(
+                figsize=figsize,
+                title=f"{title} (without priors)",
+                xlabel="Normalized FLOPs (log scale)" if normalize_flops else "FLOPs (log scale)",
+                ylabel="Average Normalized Pareto Hypervolume",
+            )
+
+        return (fig_all, ax_all), (fig_with, ax_with), (fig_without, ax_without)
+
     fig, ax = plt.subplots(figsize=figsize)
+
+    normalized_range = (
+        flop_range is not None
+        and 0.0 <= flop_range[0] <= 1.0
+        and 0.0 <= flop_range[1] <= 1.0
+    )
+    effective_flop_range = flop_range if (not normalize_flops or normalized_range) else None
     
     hvs_data = calculate_hypervolumes(
         base_path=base_path,
@@ -501,155 +1034,424 @@ def plot_hypervolume_over_flops(
         log_scale=log_scale,
     )
     
+    # First pass: collect all data and find maximum of minimum flops (excluding 0.0)
+    all_data = []
+    all_first_flops = []
+    
     for opt_name, data in hvs_data.items():
         color = get_optimizer_color(opt_name)
-        flop_counts = data["flop_counts"]
+        linestyle = get_optimizer_linestyle(opt_name)
+        flop_counts = data["norm_flops"] if normalize_flops else data["flop_counts"]
         mean_hvs = data["mean_hvs"]
         std_hvs = data["std_hvs"]
         
-        # Trim data to max_flops if specified
-        if max_flops is not None:
-            mask = flop_counts <= max_flops
+        # Trim data to flop_range if specified
+        if effective_flop_range is not None:
+            min_flops, max_flops = effective_flop_range
+            mask = (flop_counts >= min_flops) & (flop_counts <= max_flops)
             flop_counts = flop_counts[mask]
             mean_hvs = mean_hvs[mask]
             std_hvs = std_hvs[mask]
         
-        # Plot mean hypervolume
-        ax.plot(
-            flop_counts,
-            mean_hvs,
-            label=opt_name,
-            color=color,
-            linewidth=2.5,
-        )
+        if len(flop_counts) > 0:
+            all_data.append({
+                'opt_name': opt_name,
+                'color': color,
+                'linestyle': linestyle,
+                'flop_counts': flop_counts,
+                'mean_hvs': mean_hvs,
+                'std_hvs': std_hvs,
+            })
+            # Record first flop value (excluding 0.0)
+            non_zero_flops = flop_counts[flop_counts > 1e-8]
+            if len(non_zero_flops) > 0:
+                all_first_flops.append(non_zero_flops[0])
+    
+    # Calculate common starting point (max of all first flops, excluding 0.0)
+    common_start = max(all_first_flops) if all_first_flops else 0
+    
+    # Second pass: plot with common starting point
+    x_series_for_limits: list[np.ndarray] = []
+    for data in all_data:
+        flop_counts = data['flop_counts']
+        mean_hvs = data['mean_hvs']
+        std_hvs = data['std_hvs']
+
+        # Trim data to common_start
+        mask = flop_counts >= common_start - 1e-8
+        flop_counts = flop_counts[mask]
+        mean_hvs = mean_hvs[mask]
+        std_hvs = std_hvs[mask]
         
-        # Add std band
-        ax.fill_between(
-            flop_counts,
-            mean_hvs - std_hvs,
-            mean_hvs + std_hvs,
-            alpha=0.2,
-            color=color,
-        )
+        # Ensure all lines start from common_start by prepending first value if needed
+        if len(flop_counts) > 0 and flop_counts[0] > common_start + 1e-8:
+            flop_counts = np.concatenate([[common_start], flop_counts])
+            mean_hvs = np.concatenate([[mean_hvs[0]], mean_hvs])
+            std_hvs = np.concatenate([[std_hvs[0]], std_hvs])
+        
+        if len(flop_counts) > 0:
+            x_series_for_limits.append(flop_counts)
+            # Plot mean hypervolume
+            ax.plot(
+                flop_counts,
+                mean_hvs,
+                label=get_optimizer_label(data['opt_name']),
+                color=data['color'],
+                linestyle=data['linestyle'],
+                linewidth=2.5,
+            )
+            
+            # Add std band
+            ax.fill_between(
+                flop_counts,
+                mean_hvs - std_hvs,
+                mean_hvs + std_hvs,
+                alpha=0.2,
+                color=data['color'],
+            )
     
-    ax.set_xlabel("FLOPs", fontsize=12)
-    ax.set_ylabel("Hypervolume", fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight="bold")
-    ax.grid(True, alpha=0.3)
-    ax.set_xscale("log")
-    ax.set_yscale("log")  # Linear scale for y-axis to show variations clearly
+    ax.set_xlabel("Normalized FLOPs (log scale)" if normalize_flops else "FLOPs (log scale)", fontsize=13)
+    if effective_flop_range is not None:
+        ax.set_xlim(effective_flop_range[0], effective_flop_range[1])
+    elif normalize_flops:
+        left, right = _get_common_xlim(x_series_for_limits)
+        ax.set_xlim(left, right)
+    ax.set_ylabel("Average Normalized Pareto Hypervolume", fontsize=13)
+    # ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+    if not normalize_flops:
+        ax.set_xscale("log")
     
-    # Place legend below
+    # Automatically scale y-axis to fit data tightly
+    ax.autoscale(enable=True, axis='y', tight=True)
+    
+    # Place legend below with reduced padding
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.15), 
-               ncol=min(4, len(optimizers)), fontsize=11, frameon=True)
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), 
+               ncol=min(4, len(optimizers)), fontsize=10, frameon=True)
     
-    plt.tight_layout(rect=[0, 0.15, 1, 1])
+    plt.tight_layout(rect=[0, 0.10, 1, 1])
     
     return fig, ax
 
 
-def plot_relative_ranking_over_flops(
+# def plot_relative_ranking_over_flops(
+#     *,
+#     base_path: str | Path,
+#     optimizers: dict[str, list[int]] | dict[str, list[int | str]],
+#     key_to_extract: str | None = None,
+#     loss_key: str = "objective_to_minimize",
+#     log_scale: bool = False,
+#     figsize: tuple[int, int] = (10, 6),
+#     title: str = "Optimizer Rankings Over Optimization",
+#     flop_range: tuple[float, float] | None = None,
+#     return_split: bool = True,
+#     ranking_metric: str = "incumbent",
+# ) -> Any:
+#     """
+#     Plot optimizer rankings (calculated per-seed, then aggregated with mean/std).
+    
+#     Args:
+#         base_path: Base path where optimizer directories are located
+#         optimizers: Dict mapping optimizer name to list of seeds
+#         key_to_extract: Key to extract from results as cost
+#         log_scale: Whether to use log scale for x-axis
+#         figsize: Figure size
+#         title: Plot title
+#         flop_range: Tuple (min_flops, max_flops) to display on x-axis (trims data outside this range)
+    
+#     Returns:
+#         fig: Matplotlib figure
+#         ax: Axes object
+#     """
+#     if return_split:
+#         all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
+
+#         fig_all, ax_all = cast(tuple[Any, Any], plot_relative_ranking_over_flops(
+#             base_path=base_path,
+#             optimizers=all_opts,
+#             key_to_extract=key_to_extract,
+#             loss_key=loss_key,
+#             log_scale=log_scale,
+#             figsize=figsize,
+#             title=title,
+#             flop_range=flop_range,
+#             return_split=False,
+#             ranking_metric=ranking_metric,
+#         ))
+
+#         if with_priors:
+#             fig_with, ax_with = cast(tuple[Any, Any], plot_relative_ranking_over_flops(
+#                 base_path=base_path,
+#                 optimizers=with_priors,
+#                 key_to_extract=key_to_extract,
+#                 loss_key=loss_key,
+#                 log_scale=log_scale,
+#                 figsize=figsize,
+#                 title=f"{title} (with priors)",
+#                 flop_range=flop_range,
+#                 return_split=False,
+#                 ranking_metric=ranking_metric,
+#             ))
+#         else:
+#             fig_with, ax_with = _placeholder_plot(
+#                 figsize=figsize,
+#                 title=f"{title} (with priors)",
+#                 xlabel="FLOPs (log scale)",
+#                 ylabel="Relative Rank",
+#             )
+
+#         if without_priors:
+#             fig_without, ax_without = cast(tuple[Any, Any], plot_relative_ranking_over_flops(
+#                 base_path=base_path,
+#                 optimizers=without_priors,
+#                 key_to_extract=key_to_extract,
+#                 loss_key=loss_key,
+#                 log_scale=log_scale,
+#                 figsize=figsize,
+#                 title=f"{title} (without priors)",
+#                 flop_range=flop_range,
+#                 return_split=False,
+#                 ranking_metric=ranking_metric,
+#             ))
+#         else:
+#             fig_without, ax_without = _placeholder_plot(
+#                 figsize=figsize,
+#                 title=f"{title} (without priors)",
+#                 xlabel="FLOPs (log scale)",
+#                 ylabel="Relative Rank",
+#             )
+
+#         return (fig_all, ax_all), (fig_with, ax_with), (fig_without, ax_without)
+
+#     fig, ax = plt.subplots(figsize=figsize)
+    
+#     rankings = calculate_rankings(
+#         base_path=base_path,
+#         optimizers=optimizers,
+#         key_to_extract=key_to_extract,
+#         loss_key=loss_key,
+#         log_scale=log_scale,
+#         ranking_metric=ranking_metric,
+#     )
+    
+#     # Extract min_flops from flop_range if provided
+#     min_flops_start = flop_range[0] if flop_range is not None else 0
+    
+#     for opt_name, rank_data in rankings.items():
+#         color = get_optimizer_color(opt_name)
+#         linestyle = get_optimizer_linestyle(opt_name)
+#         flop_counts = rank_data["flop_counts"]
+#         mean_ranks = rank_data["mean_ranks"]
+#         std_ranks = rank_data["std_ranks"]
+        
+#         # Trim data to flop_range if specified
+#         if flop_range is not None:
+#             min_flops, max_flops = flop_range
+#             mask = (flop_counts >= min_flops) & (flop_counts <= max_flops)
+#             flop_counts = flop_counts[mask]
+#             mean_ranks = mean_ranks[mask]
+#             std_ranks = std_ranks[mask]
+        
+#         # Prepend a point at min_flops_start if the data starts after it
+#         if len(flop_counts) > 0 and flop_counts[0] > min_flops_start + 1e-8:
+#             flop_counts = np.concatenate([[min_flops_start], flop_counts])
+#             mean_ranks = np.concatenate([[mean_ranks[0]], mean_ranks])
+#             std_ranks = np.concatenate([[std_ranks[0]], std_ranks])
+        
+#         if len(flop_counts) > 0:
+#             # Plot mean ranking
+#             ax.plot(
+#                 flop_counts,
+#                 mean_ranks,
+#                 label=opt_name,
+#                 color=color,
+#                 linestyle=linestyle,
+#                 linewidth=2.5,
+#             )
+            
+#             # Add std band
+#             ax.fill_between(
+#                 flop_counts,
+#                 mean_ranks - std_ranks,
+#                 mean_ranks + std_ranks,
+#                 alpha=0.2,
+#                 color=color,
+#             )
+    
+#     ax.set_xlabel("FLOPs (log scale)", fontsize=13)
+#     ax.set_ylabel("Relative Rank", fontsize=13)
+#     ax.set_title(title, fontsize=14, fontweight="bold")
+#     ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+#     ax.invert_yaxis()  # Invert so rank 1 is at top
+#     ax.set_xscale("log")
+    
+#     # Set y-axis to linear scale with rank labels
+#     num_optimizers = len(optimizers)
+#     ax.set_xlim(flop_range[0], flop_range[1])
+#     ax.set_ylim(num_optimizers + 0.5, 0.5)
+#     ax.set_yticks(range(1, num_optimizers + 1))
+#     ax.set_yticklabels(range(1, num_optimizers + 1))
+    
+#     # Place legend below with reduced padding
+#     handles, labels = ax.get_legend_handles_labels()
+#     fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), 
+#                ncol=min(4, len(optimizers)), fontsize=10, frameon=True)
+    
+#     plt.tight_layout(rect=[0, 0.10, 1, 1])
+    
+#     return fig, ax
+
+
+def plot_normalized_relative_ranking_over_flops(
     *,
     base_path: str | Path,
-    optimizers: dict[str, list[int | str]],
+    optimizers: dict[str, list[int]] | dict[str, list[int | str]],
     key_to_extract: str | None = None,
     loss_key: str = "objective_to_minimize",
     log_scale: bool = False,
     figsize: tuple[int, int] = (10, 6),
-    title: str = "Optimizer Rankings Over Optimization",
-    max_flops: float | None = None,
-):
+    title: str = "Optimizer Rankings Over Optimization (Normalized)",
+    flop_range: tuple[float, float] | None = None,
+    return_split: bool = True,
+    ranking_metric: str = "incumbent",
+) -> Any:
     """
-    Plot optimizer rankings (calculated per-seed, then aggregated with mean/std).
-    
-    Args:
-        base_path: Base path where optimizer directories are located
-        optimizers: Dict mapping optimizer name to list of seeds
-        key_to_extract: Key to extract from results as cost
-        log_scale: Whether to use log scale for x-axis
-        figsize: Figure size
-        title: Plot title
-        max_flops: Maximum FLOPs to display on x-axis (trims data beyond this)
-    
-    Returns:
-        fig: Matplotlib figure
-        ax: Axes object
+    Plot optimizer rankings with a normalized x-axis for a single benchmark.
     """
+    if return_split:
+        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
+
+        fig_all, ax_all = cast(tuple[Any, Any], plot_normalized_relative_ranking_over_flops(
+            base_path=base_path,
+            optimizers=all_opts,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            log_scale=log_scale,
+            figsize=figsize,
+            title=title,
+            flop_range=flop_range,
+            return_split=False,
+            ranking_metric=ranking_metric,
+        ))
+
+        if with_priors:
+            fig_with, ax_with = cast(tuple[Any, Any], plot_normalized_relative_ranking_over_flops(
+                base_path=base_path,
+                optimizers=with_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                log_scale=log_scale,
+                figsize=figsize,
+                title=f"{title} (with priors)",
+                flop_range=flop_range,
+                return_split=False,
+                ranking_metric=ranking_metric,
+            ))
+        else:
+            fig_with, ax_with = _placeholder_plot(
+                figsize=figsize,
+                title=f"{title} (with priors)",
+                xlabel="Normalized FLOPs (log scale)",
+                ylabel=f"Average {ranking_metric.capitalize()} Rank",
+            )
+
+        if without_priors:
+            fig_without, ax_without = cast(tuple[Any, Any], plot_normalized_relative_ranking_over_flops(
+                base_path=base_path,
+                optimizers=without_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                log_scale=log_scale,
+                figsize=figsize,
+                title=f"{title} (without priors)",
+                flop_range=flop_range,
+                return_split=False,
+                ranking_metric=ranking_metric,
+            ))
+        else:
+            fig_without, ax_without = _placeholder_plot(
+                figsize=figsize,
+                title=f"{title} (without priors)",
+                xlabel="Normalized FLOPs (log scale)",
+                ylabel=f"Average {ranking_metric.capitalize()} Rank",
+            )
+
+        return (fig_all, ax_all), (fig_with, ax_with), (fig_without, ax_without)
+
     fig, ax = plt.subplots(figsize=figsize)
     
-    rankings = calculate_rankings(
+    rankings = calculate_normalized_rankings(
         base_path=base_path,
         optimizers=optimizers,
         key_to_extract=key_to_extract,
         loss_key=loss_key,
         log_scale=log_scale,
+        ranking_metric=ranking_metric,
     )
+
+    x_series_for_limits: list[np.ndarray] = []
     
     for opt_name, rank_data in rankings.items():
         color = get_optimizer_color(opt_name)
-        flop_counts = rank_data["flop_counts"]
+        linestyle = get_optimizer_linestyle(opt_name)
+        flop_counts = rank_data["flop_counts_scaled"]
         mean_ranks = rank_data["mean_ranks"]
         std_ranks = rank_data["std_ranks"]
         
-        # Trim data to max_flops if specified
-        if max_flops is not None:
-            mask = flop_counts <= max_flops
-            flop_counts = flop_counts[mask]
-            mean_ranks = mean_ranks[mask]
-            std_ranks = std_ranks[mask]
-        
-        # Plot mean ranking
-        ax.plot(
-            flop_counts,
-            mean_ranks,
-            label=opt_name,
-            color=color,
-            linewidth=2.5,
-        )
-        
-        # Add std band
-        ax.fill_between(
-            flop_counts,
-            mean_ranks - std_ranks,
-            mean_ranks + std_ranks,
-            alpha=0.2,
-            color=color,
-        )
+        if len(flop_counts) > 0:
+            x_series_for_limits.append(flop_counts)
+            ax.plot(
+                flop_counts,
+                mean_ranks,
+                label=get_optimizer_label(opt_name),
+                color=color,
+                linestyle=linestyle,
+                linewidth=2.5,
+            )
+            
+            ax.fill_between(
+                flop_counts,
+                mean_ranks - std_ranks,
+                mean_ranks + std_ranks,
+                alpha=0.2,
+                color=color,
+            )
     
-    ax.set_xlabel("FLOPs", fontsize=12)
-    ax.set_ylabel("Relative Rank (1=best)", fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight="bold")
-    ax.grid(True, alpha=0.3)
-    ax.invert_yaxis()  # Invert so rank 1 is at top
-    ax.set_xscale("log")
+    ax.set_xlabel("Normalized FLOPs (log scale)", fontsize=13)
+    ax.set_ylabel(f"Average {ranking_metric.capitalize()} Rank", fontsize=13)
+    # ax.set_title(title, fontsize=14, fontweight="bold")
+    left, right = _get_common_xlim(x_series_for_limits)
+    ax.set_xlim(left, right)
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+    ax.invert_yaxis()
     
-    # Set y-axis to linear scale with rank labels
     num_optimizers = len(optimizers)
     ax.set_ylim(num_optimizers + 0.5, 0.5)
     ax.set_yticks(range(1, num_optimizers + 1))
     ax.set_yticklabels(range(1, num_optimizers + 1))
     
-    # Place legend below
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.15), 
-               ncol=min(4, len(optimizers)), fontsize=11, frameon=True)
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), 
+               ncol=min(4, len(optimizers)), fontsize=10, frameon=True)
     
-    plt.tight_layout(rect=[0, 0.15, 1, 1])
+    plt.tight_layout(rect=[0, 0.10, 1, 1])
     
     return fig, ax
 
 
 def plot_optimizer_rankings_across_benchmarks(
     *,
-    base_path: str | Path,
-    benchmarks: dict[str, any],
-    optimizers: dict[str, list[int | str]],
+    base_path: Path,
+    benchmarks: list[str],
+    optimizers: dict[str, list[int]] | dict[str, list[int | str]],
     key_to_extract: str | None = None,
     loss_key: str = "objective_to_minimize",
     figsize: tuple[int, int] = (10, 6),
     title: str = "Optimizer Rankings Across Benchmarks",
-):
+    return_split: bool = True,
+    ranking_metric: str = "incumbent",
+) -> Any:
     """
     Plot mean optimizer rankings aggregated across all benchmarks with std bands.
     
@@ -658,7 +1460,7 @@ def plot_optimizer_rankings_across_benchmarks(
     
     Args:
         base_path: Base path where benchmark optimizer directories are located
-        benchmarks: Dict mapping benchmark name to benchmark config
+        benchmarks: List of benchmark names
         optimizers: Dict mapping optimizer name to list of seeds
         key_to_extract: Key to extract from results as cost
         figsize: Figure size
@@ -668,31 +1470,88 @@ def plot_optimizer_rankings_across_benchmarks(
         fig: Matplotlib figure
         ax: Axes object
     """
+    if return_split:
+        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
+
+        fig_all, ax_all = cast(tuple[Any, Any], plot_optimizer_rankings_across_benchmarks(
+            base_path=base_path,
+            benchmarks=benchmarks,
+            optimizers=all_opts,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            figsize=figsize,
+            title=title,
+            return_split=False,
+            ranking_metric=ranking_metric,
+        ))
+
+        if with_priors:
+            fig_with, ax_with = cast(tuple[Any, Any], plot_optimizer_rankings_across_benchmarks(
+                base_path=base_path,
+                benchmarks=benchmarks,
+                optimizers=with_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                figsize=figsize,
+                title=f"{title} (with priors)",
+                return_split=False,
+                ranking_metric=ranking_metric,
+            ))
+        else:
+            fig_with, ax_with = _placeholder_plot(
+                figsize=figsize,
+                title=f"{title} (with priors)",
+                xlabel="Normalized FLOPs (log scale)",
+                ylabel=f"Average {ranking_metric.capitalize()} Rank",
+            )
+
+        if without_priors:
+            fig_without, ax_without = cast(tuple[Any, Any], plot_optimizer_rankings_across_benchmarks(
+                base_path=base_path,
+                benchmarks=benchmarks,
+                optimizers=without_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                figsize=figsize,
+                title=f"{title} (without priors)",
+                return_split=False,
+                ranking_metric=ranking_metric,
+            ))
+        else:
+            fig_without, ax_without = _placeholder_plot(
+                figsize=figsize,
+                title=f"{title} (without priors)",
+                xlabel="Normalized FLOPs (log scale)",
+                ylabel=f"Average {ranking_metric.capitalize()} Rank",
+            )
+
+        return (fig_all, ax_all), (fig_with, ax_with), (fig_without, ax_without)
+
     fig, ax = plt.subplots(figsize=figsize)
     
-    benchmark_names = list(benchmarks.keys())
     optimizer_names = list(optimizers.keys())
     
     # Collect all ranking curves for each optimizer across benchmarks
     optimizer_all_ranks = {opt: [] for opt in optimizer_names}
     optimizer_all_flop_counts = {opt: [] for opt in optimizer_names}
     
-    for benchmark_name in benchmark_names:
+    for benchmark_name in benchmarks:
         try:
             # Calculate rankings for this benchmark
-            rankings = calculate_rankings(
-                base_path=base_path,
+            rankings = calculate_normalized_rankings(
+                base_path=base_path / benchmark_name,
                 optimizers=optimizers,
                 key_to_extract=key_to_extract,
                 loss_key=loss_key,
                 log_scale=False,
+                ranking_metric=ranking_metric,
             )
             
             # Collect ranking curves for each optimizer from this benchmark
             for opt_name in optimizer_names:
                 if opt_name in rankings:
                     seed_ranks = rankings[opt_name]["seed_ranks"]
-                    flop_counts = rankings[opt_name]["flop_counts"]
+                    flop_counts = rankings[opt_name]["flop_counts_scaled"]
                     optimizer_all_ranks[opt_name].extend(seed_ranks)
                     optimizer_all_flop_counts[opt_name].append(flop_counts)
         
@@ -701,12 +1560,14 @@ def plot_optimizer_rankings_across_benchmarks(
             continue
     
     # For each optimizer, aggregate ranks across benchmarks
+    x_series_for_limits: list[np.ndarray] = []
     for opt_name in optimizer_names:
         if not optimizer_all_ranks[opt_name]:
             print(f"Warning: No ranking data for optimizer {opt_name}")
             continue
         
         color = get_optimizer_color(opt_name)
+        linestyle = get_optimizer_linestyle(opt_name)
         
         # Stack all ranking curves from different benchmarks
         all_ranks_array = np.array(optimizer_all_ranks[opt_name])
@@ -717,14 +1578,17 @@ def plot_optimizer_rankings_across_benchmarks(
         se_ranks = std_ranks / np.sqrt(len(optimizer_all_ranks[opt_name]))
         
         # Use flop counts from first benchmark as reference (they should be similar after interpolation)
+        # All flop counts are log-spaced FLOP values (min_flop to max_flop) and have the same length
         flop_counts = optimizer_all_flop_counts[opt_name][0]
+        x_series_for_limits.append(flop_counts)
         
         # Plot mean ranking
         ax.plot(
             flop_counts,
             mean_ranks,
-            label=opt_name,
+            label=get_optimizer_label(opt_name),
             color=color,
+            linestyle=linestyle,
             linewidth=2.5,
         )
         
@@ -737,20 +1601,403 @@ def plot_optimizer_rankings_across_benchmarks(
             color=color,
         )
     
-    ax.set_xlabel("FLOPs", fontsize=12)
-    ax.set_ylabel("Relative Rank (1=best)", fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight="bold")
-    ax.grid(True, alpha=0.3)
+    ax.set_xlabel("Normalized FLOPs (log scale)", fontsize=13)
+    left, right = _get_common_xlim(x_series_for_limits)
+    ax.set_xlim(left, right)
+    ax.set_ylabel(f"Average {ranking_metric.capitalize()} Rank", fontsize=13)
+    # ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
     ax.invert_yaxis()  # Invert so rank 1 is at top
     
-    # Place legend below
+    # Place legend below with reduced padding
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.15), 
-               ncol=min(4, len(optimizers)), fontsize=11, frameon=True)
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), 
+               ncol=min(4, len(optimizers)), fontsize=10, frameon=True)
     
-    plt.tight_layout(rect=[0, 0.15, 1, 1])
+    plt.tight_layout(rect=[0, 0.10, 1, 1])
     
     return fig, ax
+
+
+def plot_loss_composite_across_benchmarks(
+    *,
+    base_path: Path,
+    benchmarks: list[str],
+    optimizers: dict[str, list[int]] | dict[str, list[int | str]],
+    key_to_extract: str | None = None,
+    loss_key: str = "objective_to_minimize",
+    flop_range: tuple[float, float] | None = None,
+    return_split: bool = True,
+) -> Any:
+    """
+    Create composite loss figures with all benchmarks + across-benchmark aggregate.
+    
+    Reuses existing plot_optimizer_loss function and combines plots in a single figure
+    with shared legend.
+    
+    Args:
+        base_path: Base path where benchmark optimizer directories are located
+        benchmarks: List of benchmark names
+        optimizers: Dict mapping optimizer name to list of seeds
+        key_to_extract: Key to extract from results as cost
+        loss_key: Loss metric key
+        flop_range: Tuple (min_flops, max_flops) to trim data
+        return_split: If True, returns 3 figures (all/with_priors/without_priors)
+    
+    Returns:
+        If return_split=True: tuple of 3 figures
+        If return_split=False: single figure (fig, axes)
+    """
+    if return_split:
+        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
+
+        result_all = cast(tuple[Any, Any], plot_loss_composite_across_benchmarks(
+            base_path=base_path,
+            benchmarks=benchmarks,
+            optimizers=all_opts,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            flop_range=flop_range,
+            return_split=False,
+        ))
+
+        if with_priors:
+            result_with = cast(tuple[Any, Any], plot_loss_composite_across_benchmarks(
+                base_path=base_path,
+                benchmarks=benchmarks,
+                optimizers=with_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                flop_range=flop_range,
+                return_split=False,
+            ))
+        else:
+            fig_with, ax_with = plt.subplots(figsize=(12, 4 * (len(benchmarks) + 1)))
+            ax_with.text(0.5, 0.5, "No optimizers in with_priors group", 
+                        ha="center", va="center", transform=ax_with.transAxes)
+            result_with = (fig_with, ax_with)
+
+        if without_priors:
+            result_without = cast(tuple[Any, Any], plot_loss_composite_across_benchmarks(
+                base_path=base_path,
+                benchmarks=benchmarks,
+                optimizers=without_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                flop_range=flop_range,
+                return_split=False,
+            ))
+        else:
+            fig_without, ax_without = plt.subplots(figsize=(12, 4 * (len(benchmarks) + 1)))
+            ax_without.text(0.5, 0.5, "No optimizers in without_priors group",
+                           ha="center", va="center", transform=ax_without.transAxes)
+            result_without = (fig_without, ax_without)
+
+        return result_all, result_with, result_without
+
+    # Create composite figure with subplots for each benchmark + aggregate
+    num_subplots = len(benchmarks) + 1
+    figsize = (12, 4 * num_subplots)
+    fig, axes = plt.subplots(num_subplots, 1, figsize=figsize, sharex=True)
+    if num_subplots == 1:
+        axes = [axes]
+    
+    # Collect handles/labels for shared legend
+    shared_handles = None
+    shared_labels = None
+    # Plot loss for each benchmark (aggregate panel is first, so benchmarks start at index 1)
+    for idx, benchmark_name in enumerate(benchmarks):
+        ax = axes[idx + 1]
+        try:
+            benchmark_path = base_path / benchmark_name
+            
+            # Call existing loss plot function (with return_split=False to get single figure)
+            letter = string.ascii_lowercase[idx + 1]
+            fig_bench, ax_bench = cast(tuple[Any, Any], plot_optimizer_loss(
+                base_path=benchmark_path,
+                optimizers=optimizers,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                log_scale=False,
+                figsize=(12, 4),
+                title="",
+                flop_range=flop_range,
+                normalize_flops=True,
+                return_split=False,
+            ))
+            ax.set_title(f"({letter}) {BENCHMARK_TITLES[benchmark_name]}", loc='left', fontsize=10, fontweight='bold')
+            
+            # Re-plot line data instead of reusing artists from another figure.
+            _replot_lines(ax_bench, ax)
+            
+            # Copy axis properties
+            ax.set_ylim(ax_bench.get_ylim())
+            ax.set_xlabel(ax_bench.get_xlabel())
+            ax.set_ylabel(ax_bench.get_ylabel())
+            # ax.set_title(benchmark_name, fontsize=12, fontweight="bold")
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+            
+            # Collect legend handles/labels from first benchmark
+            if idx == 0:
+                shared_handles, shared_labels = ax_bench.get_legend_handles_labels()
+            
+            plt.close(fig_bench)
+            
+        except Exception as e:
+            print(f"Warning: Could not plot loss for {benchmark_name}: {e}")
+            ax.text(0.5, 0.5, f"Error plotting {benchmark_name}", 
+                   ha="center", va="center", transform=ax.transAxes)
+    
+    # Plot across-benchmark aggregate (rankings) in the first subplot
+    agg_ax = axes[0]
+    try:
+        # Call ranking plot function for aggregate incumbent ranking
+        fig_agg, ax_agg = cast(tuple[Any, Any], plot_optimizer_rankings_across_benchmarks(
+            base_path=base_path,
+            benchmarks=benchmarks,
+            optimizers=optimizers,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            title="",
+            figsize=(12, 4),
+            return_split=False,
+            ranking_metric="incumbent",
+        ))
+        title="Across Benchmarks (Incumbent Ranking)"
+        
+        # Re-plot line data instead of reusing artists from another figure.
+        _replot_lines(ax_agg, agg_ax)
+        
+        # Copy axis properties
+        agg_ax.set_ylim(ax_agg.get_ylim())
+        agg_ax.set_xlabel(ax_agg.get_xlabel())
+        agg_ax.set_ylabel(ax_agg.get_ylabel())
+        agg_ax.set_title(f"({string.ascii_lowercase[0]}) {title}", loc='left', fontsize=10, fontweight='bold')
+        agg_ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+        # agg_ax.invert_yaxis()
+        plt.close(fig_agg)
+        
+    except Exception as e:
+        print(f"Warning: Could not plot aggregate ranking: {e}")
+        agg_ax.text(0.5, 0.5, f"Error plotting aggregate", 
+                   ha="center", va="center", transform=agg_ax.transAxes)
+
+    # Enforce one shared x-range across all composite panels.
+    x_series_for_limits: list[np.ndarray] = []
+    for ax in axes:
+        for line in ax.get_lines():
+            x_values = np.asarray(line.get_xdata(), dtype=float)
+            if len(x_values) > 0:
+                x_series_for_limits.append(x_values)
+    if x_series_for_limits:
+        left, right = _get_common_xlim(x_series_for_limits)
+        axes[0].set_xlim(left, right)
+    
+    # Remove individual legends
+    for ax in axes:
+        if ax.get_legend() is not None:
+            ax.get_legend().remove()
+    
+    # Add single shared legend at bottom
+    if shared_handles and shared_labels:
+        fig.legend(shared_handles, shared_labels, loc='lower center', bbox_to_anchor=(0.5, -0.02),
+                  ncol=min(4, len(optimizers)), fontsize=10, frameon=True)
+    
+    plt.tight_layout(rect=[0, 0.05, 1, 1], h_pad=3.0)
+    
+    return fig, axes
+
+
+def plot_hypervolume_composite_across_benchmarks(
+    *,
+    base_path: Path,
+    benchmarks: list[str],
+    optimizers: dict[str, list[int]] | dict[str, list[int | str]],
+    key_to_extract: str | None = None,
+    loss_key: str = "objective_to_minimize",
+    flop_range: tuple[float, float] | None = None,
+    return_split: bool = True,
+) -> Any:
+    """
+    Create composite hypervolume figures with all benchmarks + across-benchmark aggregate.
+    
+    Reuses existing plot_hypervolume_over_flops function and combines plots in a single figure
+    with shared legend.
+    
+    Args:
+        base_path: Base path where benchmark optimizer directories are located
+        benchmarks: List of benchmark names
+        optimizers: Dict mapping optimizer name to list of seeds
+        key_to_extract: Key to extract from results as cost
+        loss_key: Loss metric key
+        flop_range: Tuple (min_flops, max_flops) to trim data
+        return_split: If True, returns 3 figures (all/with_priors/without_priors)
+    
+    Returns:
+        If return_split=True: tuple of 3 figures
+        If return_split=False: single figure (fig, axes)
+    """
+    if return_split:
+        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
+
+        result_all = cast(tuple[Any, Any], plot_hypervolume_composite_across_benchmarks(
+            base_path=base_path,
+            benchmarks=benchmarks,
+            optimizers=all_opts,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            flop_range=flop_range,
+            return_split=False,
+        ))
+
+        if with_priors:
+            result_with = cast(tuple[Any, Any], plot_hypervolume_composite_across_benchmarks(
+                base_path=base_path,
+                benchmarks=benchmarks,
+                optimizers=with_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                flop_range=flop_range,
+                return_split=False,
+            ))
+        else:
+            fig_with, ax_with = plt.subplots(figsize=(12, 4 * (len(benchmarks) + 1)))
+            ax_with.text(0.5, 0.5, "No optimizers in with_priors group", 
+                        ha="center", va="center", transform=ax_with.transAxes)
+            result_with = (fig_with, ax_with)
+
+        if without_priors:
+            result_without = cast(tuple[Any, Any], plot_hypervolume_composite_across_benchmarks(
+                base_path=base_path,
+                benchmarks=benchmarks,
+                optimizers=without_priors,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                flop_range=flop_range,
+                return_split=False,
+            ))
+        else:
+            fig_without, ax_without = plt.subplots(figsize=(12, 4 * (len(benchmarks) + 1)))
+            ax_without.text(0.5, 0.5, "No optimizers in without_priors group",
+                           ha="center", va="center", transform=ax_without.transAxes)
+            result_without = (fig_without, ax_without)
+
+        return result_all, result_with, result_without
+
+    # Create composite figure with subplots for each benchmark + aggregate
+    num_subplots = len(benchmarks) + 1
+    figsize = (12, 4 * num_subplots)
+    fig, axes = plt.subplots(num_subplots, 1, figsize=figsize, sharex=True)
+    if num_subplots == 1:
+        axes = [axes]
+    
+    # Collect handles/labels for shared legend
+    shared_handles = None
+    shared_labels = None
+    
+    # Plot hypervolume for each benchmark (aggregate panel is first, so benchmarks start at index 1)
+    for idx, benchmark_name in enumerate(benchmarks):
+        ax = axes[idx + 1]
+        try:
+            benchmark_path = base_path / benchmark_name
+            
+            # Call existing hypervolume plot function (with return_split=False to get single figure)
+            fig_bench, ax_bench = cast(tuple[Any, Any], plot_hypervolume_over_flops(
+                base_path=benchmark_path,
+                optimizers=optimizers,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                log_scale=False,
+                title="",
+                figsize=(12, 4),
+                flop_range=flop_range,
+                normalize_flops=True,
+                return_split=False,
+            ))
+            letter = string.ascii_lowercase[idx + 1]
+            
+            # Re-plot line data instead of reusing artists from another figure.
+            _replot_lines(ax_bench, ax)
+            
+            # Copy axis properties
+            ax.set_title(f"({letter}) {BENCHMARK_TITLES[benchmark_name]}", loc='left', fontsize=10, fontweight='bold')
+            ax.set_ylim(ax_bench.get_ylim())
+            ax.set_xlabel(ax_bench.get_xlabel())
+            ax.set_ylabel(ax_bench.get_ylabel())
+            # ax.set_title(benchmark_name, fontsize=12, fontweight="bold")
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+            
+            # Collect legend handles/labels from first benchmark
+            if idx == 0:
+                shared_handles, shared_labels = ax_bench.get_legend_handles_labels()
+            
+            plt.close(fig_bench)
+            
+        except Exception as e:
+            print(f"Warning: Could not plot hypervolume for {benchmark_name}: {e}")
+            ax.text(0.5, 0.5, f"Error plotting {benchmark_name}", 
+                   ha="center", va="center", transform=ax.transAxes)
+    
+    # Plot across-benchmark aggregate (rankings using hypervolume metric) in the first subplot
+    agg_ax = axes[0]
+    try:
+        # Call ranking plot function for aggregate hypervolume ranking
+        fig_agg, ax_agg = cast(tuple[Any, Any], plot_optimizer_rankings_across_benchmarks(
+            base_path=base_path,
+            benchmarks=benchmarks,
+            optimizers=optimizers,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            title="",
+            figsize=(12, 4),
+            return_split=False,
+            ranking_metric="hypervolume",
+        ))
+        title="Across Benchmarks (Hypervolume Ranking)"
+
+        
+        # Re-plot line data instead of reusing artists from another figure.
+        _replot_lines(ax_agg, agg_ax)
+        plt.close(fig_agg)
+        
+        # Copy axis properties
+        agg_ax.set_title(f"({string.ascii_lowercase[0]}) {title}", loc='left', fontsize=10, fontweight='bold')
+        agg_ax.set_ylim(ax_agg.get_ylim())
+        agg_ax.set_xlabel(ax_agg.get_xlabel())
+        agg_ax.set_ylabel(ax_agg.get_ylabel())
+        agg_ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+        # agg_ax.invert_yaxis()
+        
+    except Exception as e:
+        print(f"Warning: Could not plot aggregate ranking: {e}")
+        agg_ax.text(0.5, 0.5, f"Error plotting aggregate", 
+                   ha="center", va="center", transform=agg_ax.transAxes)
+
+    # Enforce one shared x-range across all composite panels.
+    x_series_for_limits: list[np.ndarray] = []
+    for ax in axes:
+        for line in ax.get_lines():
+            x_values = np.asarray(line.get_xdata(), dtype=float)
+            if len(x_values) > 0:
+                x_series_for_limits.append(x_values)
+    if x_series_for_limits:
+        left, right = _get_common_xlim(x_series_for_limits)
+        axes[0].set_xlim(left, right)
+    
+    # Remove individual legends
+    for ax in axes:
+        if ax.get_legend() is not None:
+            ax.get_legend().remove()
+    
+    # Add single shared legend at bottom
+    if shared_handles and shared_labels:
+        fig.legend(shared_handles, shared_labels, loc='lower center', bbox_to_anchor=(0.5, -0.02),
+                  ncol=min(4, len(optimizers)), fontsize=10, frameon=True)
+    
+    plt.tight_layout(rect=[0, 0.05, 1, 1])
+    plt.subplots_adjust(hspace=0.3)
+    
+    return fig, axes
 
 
 if __name__ == "__main__":
@@ -768,8 +2015,8 @@ if __name__ == "__main__":
     # Seeds to process
     
     # Optimizers available (map optimizer name to seeds)
-    # all_seeds = list(set(range(40, 47)))
-    all_seeds = [40]
+    all_seeds = list(set(range(40, 51)))
+    # all_seeds = [40]
     optimizers_dict = {
         "random_search": all_seeds,
         "random_search_with_priors": all_seeds,
@@ -786,111 +2033,219 @@ if __name__ == "__main__":
     from src.benchmarks.configs import BenchmarkEnum
     from src.benchmarks.llm_space import LLM_TARGETS
     from src.benchmarks.openclip_space import OPENCLIP_TARGETS
+    from src.plotting.plot_styles import BENCHMARK_TITLES
     
-    # for benchmark_name in [BenchmarkEnum.LLM, BenchmarkEnum.OPENCLIP]:
-    for benchmark_name in [BenchmarkEnum.OPENCLIP]:
+    benchmarks = [
+        BenchmarkEnum.OPENCLIP.value, 
+        BenchmarkEnum.LLM.value
+        ]
+    for benchmark_name in benchmarks:
+        break
         print(f"\n{'='*60}")
         print(f"Generating plots for: {benchmark_name}")
         print(f"{'='*60}")
-        targets = {BenchmarkEnum.LLM: LLM_TARGETS, BenchmarkEnum.OPENCLIP: OPENCLIP_TARGETS}
+        targets = {BenchmarkEnum.LLM.value: LLM_TARGETS, BenchmarkEnum.OPENCLIP.value: OPENCLIP_TARGETS}
+        
         for target in targets[benchmark_name]:
-        # for target in ["arc_challenge_acc"]:
             try:
                 target = target.value
             except AttributeError:
                 pass
             loss_key = f"extra.predictions.{target}.mean"
-            try:
-                # Create output directory
-                plot_output_dir = results_dir / benchmark_name / "plots" / target
-                plot_output_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Plot 1: Loss over FLOPs
-                print(f"  Plotting loss over FLOPs...")
-                # try:
-                from src.benchmarks.configs import get_benchmark
-                max_flops_display = get_benchmark(benchmark_name, False).max_evaluation_flops * 0.6
-                fig_loss, ax_loss = plot_optimizer_loss(
-                    base_path=results_dir / benchmark_name,
-                    optimizers=optimizers_dict,
-                    key_to_extract="cost",
-                    log_scale=False,
-                    loss_key=loss_key,
-                    title=f"{benchmark_name} - Loss Over Optimization",
-                    max_flops=max_flops_display,
-                )
-                fig_loss.savefig(plot_output_dir / "loss.png", dpi=300, bbox_inches="tight")
-                plt.close(fig_loss)
-                print(f"    ✓ Saved: {plot_output_dir / 'loss.png'}")
-                # except Exception as e:
-                #     print(f"    ✗ Error plotting loss: {e}")
-                
-                # Plot 2: Hypervolume
-                print(f"  Plotting hypervolume...")
+            # Create output directory
+            plot_output_dir = results_dir / benchmark_name / "plots" / target
+            plot_output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Plot 1: Loss over FLOPs
+            print(f"  Plotting loss over FLOPs...")
+            # try:
+            from src.benchmarks.configs import get_benchmark
+            flop_range = (5e16 if benchmark_name == BenchmarkEnum.OPENCLIP.value else 9.99e18, get_benchmark(benchmark_name, False).max_evaluation_flops * 0.9 * (1e9 if benchmark_name == BenchmarkEnum.OPENCLIP.value else 1))
+            (fig_loss_all, _), (fig_loss_with, _), (fig_loss_without, _) = plot_optimizer_loss(
+                base_path=results_dir / benchmark_name,
+                optimizers=optimizers_dict,
+                key_to_extract="cost",
+                log_scale=False,
+                loss_key=loss_key,
+                title=f"{BENCHMARK_TITLES[benchmark_name]}",
+                flop_range=flop_range,
+            )
+            fig_loss_all.savefig(plot_output_dir / "loss_all.png", dpi=300, bbox_inches="tight")
+            fig_loss_with.savefig(plot_output_dir / "loss_with_priors.png", dpi=300, bbox_inches="tight")
+            fig_loss_without.savefig(plot_output_dir / "loss_without_priors.png", dpi=300, bbox_inches="tight")
+            plt.close(fig_loss_all)
+            plt.close(fig_loss_with)
+            plt.close(fig_loss_without)
+            print(f"    ✓ Saved: {plot_output_dir / 'loss_all.png'}")
+            print(f"    ✓ Saved: {plot_output_dir / 'loss_with_priors.png'}")
+            print(f"    ✓ Saved: {plot_output_dir / 'loss_without_priors.png'}")
+            # except Exception as e:
+                # print(f"    ✗ Error plotting loss: {e}")
+            
+            # Plot 2: Hypervolume
+            print(f"  Plotting hypervolume...")
+            # try:
+            (fig_hv_all, _), (fig_hv_with, _), (fig_hv_without, _) = plot_hypervolume_over_flops(
+                base_path=results_dir / benchmark_name,
+                optimizers=optimizers_dict,
+                key_to_extract="cost",
+                log_scale=False,
+                loss_key=loss_key,
+                title=f"{BENCHMARK_TITLES[benchmark_name]}",
+                flop_range=flop_range,
+            )
+            fig_hv_all.savefig(plot_output_dir / "hypervolume_all.png", dpi=300, bbox_inches="tight")
+            fig_hv_with.savefig(plot_output_dir / "hypervolume_with_priors.png", dpi=300, bbox_inches="tight")
+            fig_hv_without.savefig(plot_output_dir / "hypervolume_without_priors.png", dpi=300, bbox_inches="tight")
+            plt.close(fig_hv_all)
+            plt.close(fig_hv_with)
+            plt.close(fig_hv_without)
+            print(f"    ✓ Saved: {plot_output_dir / 'hypervolume_all.png'}")
+            print(f"    ✓ Saved: {plot_output_dir / 'hypervolume_with_priors.png'}")
+            print(f"    ✓ Saved: {plot_output_dir / 'hypervolume_without_priors.png'}")
+            # except Exception as e:
+            #     print(f"    ✗ Error plotting hypervolume: {e}")
+            
+            # Plot 3: Rankings
+            # print(f"  Plotting rankings...")
+            # (fig_rank_all, _), (fig_rank_with, _), (fig_rank_without, _) = plot_relative_ranking_over_flops(
+            #     base_path=results_dir / benchmark_name,
+            #     optimizers=optimizers_dict,
+            #     key_to_extract="cost",
+            #     log_scale=False,
+            #     loss_key=loss_key,
+            #     title=BENCHMARK_TITLES[benchmark_name],
+            #     flop_range=flop_range,
+            # )
+            # fig_rank_all.savefig(plot_output_dir / "rankings_all.png", dpi=300, bbox_inches="tight")
+            # fig_rank_with.savefig(plot_output_dir / "rankings_with_priors.png", dpi=300, bbox_inches="tight")
+            # fig_rank_without.savefig(plot_output_dir / "rankings_without_priors.png", dpi=300, bbox_inches="tight")
+            # plt.close(fig_rank_all)
+            # plt.close(fig_rank_with)
+            # plt.close(fig_rank_without)
+            # print(f"    ✓ Saved: {plot_output_dir / 'rankings_all.png'}")
+            # print(f"    ✓ Saved: {plot_output_dir / 'rankings_with_priors.png'}")
+            # print(f"    ✓ Saved: {plot_output_dir / 'rankings_without_priors.png'}")
+            
+            # Plot 4: Normalized Rankings per benchmark
+            print(f"  Plotting normalized rankings...")
+            for ranking_metric in ["incumbent", "hypervolume"]:
                 try:
-                    fig_hv, ax_hv = plot_hypervolume_over_flops(
+                    (fig_rank_norm_all, _), (fig_rank_norm_with, _), (fig_rank_norm_without, _) = plot_normalized_relative_ranking_over_flops(
                         base_path=results_dir / benchmark_name,
                         optimizers=optimizers_dict,
                         key_to_extract="cost",
                         log_scale=False,
                         loss_key=loss_key,
-                        title=f"{benchmark_name} - Hypervolume",
-                        max_flops=max_flops_display,
+                        title=BENCHMARK_TITLES[benchmark_name],
+                        flop_range=flop_range,
+                        ranking_metric=ranking_metric
                     )
-                    fig_hv.savefig(plot_output_dir / "hypervolume.png", dpi=300, bbox_inches="tight")
-                    plt.close(fig_hv)
-                    print(f"    ✓ Saved: {plot_output_dir / 'hypervolume.png'}")
+                    fig_rank_norm_all.savefig(plot_output_dir / f"rankings_{ranking_metric}_normalized_all.png", dpi=300, bbox_inches="tight")
+                    fig_rank_norm_with.savefig(plot_output_dir / f"rankings_{ranking_metric}_normalized_with_priors.png", dpi=300, bbox_inches="tight")
+                    fig_rank_norm_without.savefig(plot_output_dir / f"rankings_{ranking_metric}_normalized_without_priors.png", dpi=300, bbox_inches="tight")
+                    plt.close(fig_rank_norm_all)
+                    plt.close(fig_rank_norm_with)
+                    plt.close(fig_rank_norm_without)
+                    print(f"    ✓ Saved: {plot_output_dir / f'rankings_{ranking_metric}_normalized_all.png'}")
+                    print(f"    ✓ Saved: {plot_output_dir / f'rankings_{ranking_metric}_normalized_with_priors.png'}")
+                    print(f"    ✓ Saved: {plot_output_dir / f'rankings_{ranking_metric}_normalized_without_priors.png'}")
                 except Exception as e:
-                    print(f"    ✗ Error plotting hypervolume: {e}")
-                
-                # Plot 3: Rankings
-                print(f"  Plotting rankings...")
-                # try:
-                fig_rank, ax_rank = plot_relative_ranking_over_flops(
-                    base_path=results_dir / benchmark_name,
-                    optimizers=optimizers_dict,
-                    key_to_extract="cost",
-                    log_scale=False,
-                    loss_key=loss_key,
-                    title=f"{benchmark_name} - Optimizer Rankings",
-                    max_flops=max_flops_display,
-                )
-                fig_rank.savefig(plot_output_dir / "rankings.png", dpi=300, bbox_inches="tight")
-                plt.close(fig_rank)
-                print(f"    ✓ Saved: {plot_output_dir / 'rankings.png'}")
-                # except Exception as e:
-                #     print(f"    ✗ Error plotting rankings: {e}")
-                
+                    print(f"    ✗ Error plotting normalized rankings: {e}")
+
                 print(f"  ✓ All plots generated for {benchmark_name}")
                 
-            except Exception as e:
-                print(f"  ✗ Error generating plots for {benchmark_name}: {e}")
-                import traceback
-                traceback.print_exc()
+    # Plot: Composite loss plots (all benchmarks + aggregate in single figures)
+    print(f"\n{'='*60}")
+    print("Generating composite loss plots across all benchmarks...")
+    print(f"{'='*60}")
+    # try:
+    (fig_loss_comp_all, _), (fig_loss_comp_with, _), (fig_loss_comp_without, _) = plot_loss_composite_across_benchmarks(
+        base_path=results_dir,
+        benchmarks=benchmarks,
+        optimizers=optimizers_dict,
+        key_to_extract="cost",
+    )
     
+    # Save composite loss plots to main plots directory
+    plots_dir = results_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    fig_loss_comp_all.savefig(plots_dir / "loss_composite_all.png", dpi=300, bbox_inches="tight")
+    fig_loss_comp_with.savefig(plots_dir / "loss_composite_with_priors.png", dpi=300, bbox_inches="tight")
+    fig_loss_comp_without.savefig(plots_dir / "loss_composite_without_priors.png", dpi=300, bbox_inches="tight")
+    plt.close(fig_loss_comp_all)
+    plt.close(fig_loss_comp_with)
+    plt.close(fig_loss_comp_without)
+    print(f"✓ Saved: {plots_dir / 'loss_composite_all.png'}")
+    print(f"✓ Saved: {plots_dir / 'loss_composite_with_priors.png'}")
+    print(f"✓ Saved: {plots_dir / 'loss_composite_without_priors.png'}")
+
+    # except Exception as e:
+    #     print(f"✗ Error plotting composite loss: {e}")
+    #     import traceback
+    #     traceback.print_exc()
+                
+    # Plot: Composite hypervolume plots (all benchmarks + aggregate in single figures)
+    print(f"\n{'='*60}")
+    print("Generating composite hypervolume plots across all benchmarks...")
+    print(f"{'='*60}")
+    try:
+        (fig_hv_comp_all, _), (fig_hv_comp_with, _), (fig_hv_comp_without, _) = plot_hypervolume_composite_across_benchmarks(
+            base_path=results_dir,
+            benchmarks=benchmarks,
+            optimizers=optimizers_dict,
+            key_to_extract="cost",
+        )
+        
+        # Save composite hypervolume plots to main plots directory
+        plots_dir = results_dir / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        fig_hv_comp_all.savefig(plots_dir / "hypervolume_composite_all.png", dpi=300, bbox_inches="tight")
+        fig_hv_comp_with.savefig(plots_dir / "hypervolume_composite_with_priors.png", dpi=300, bbox_inches="tight")
+        fig_hv_comp_without.savefig(plots_dir / "hypervolume_composite_without_priors.png", dpi=300, bbox_inches="tight")
+        plt.close(fig_hv_comp_all)
+        plt.close(fig_hv_comp_with)
+        plt.close(fig_hv_comp_without)
+        print(f"✓ Saved: {plots_dir / 'hypervolume_composite_all.png'}")
+        print(f"✓ Saved: {plots_dir / 'hypervolume_composite_with_priors.png'}")
+        print(f"✓ Saved: {plots_dir / 'hypervolume_composite_without_priors.png'}")
+    except Exception as e:
+        print(f"✗ Error plotting composite hypervolume: {e}")
+        import traceback
+        traceback.print_exc()
+                
     # Plot 4: Parallel coordinate plot showing rankings across all benchmarks
     print(f"\n{'='*60}")
     print("Generating parallel coordinate plot across all benchmarks...")
     print(f"{'='*60}")
-    # try:
-    #     fig_parallel, ax_parallel = plot_optimizer_rankings_across_benchmarks(
-    #         base_path=results_dir,
-    #         benchmarks=benchmarks_dict,
-    #         optimizers=optimizers_dict,
-    #         key_to_extract="cost",
-    #         title="Optimizer Rankings Across Benchmarks",
-    #     )
-        
-    #     # Save parallel coordinate plot to main plots directory
-    #     plots_dir = results_dir / "plots"
-    #     plots_dir.mkdir(parents=True, exist_ok=True)
-    #     fig_parallel.savefig(plots_dir / "optimizer_rankings_parallel.png", dpi=300, bbox_inches="tight")
-    #     plt.close(fig_parallel)
-    #     print(f"✓ Saved: {plots_dir / 'optimizer_rankings_parallel.png'}")
-    # except Exception as e:
-    #     print(f"✗ Error plotting parallel coordinates: {e}")
-    #     import traceback
-    #     traceback.print_exc()
+    for ranking_metric in ["incumbent", "hypervolume"]:
+        print(f"\n  Plotting parallel coordinates for {ranking_metric} rankings...")
+        try:
+            (fig_parallel_all, _), (fig_parallel_with, _), (fig_parallel_without, _) = plot_optimizer_rankings_across_benchmarks(
+                base_path=results_dir,
+                benchmarks=benchmarks,
+                optimizers=optimizers_dict,
+                key_to_extract="cost",
+                title="Optimizer Rankings Across Benchmarks",
+                ranking_metric=ranking_metric,
+            )
+            
+            # Save parallel coordinate plot to main plots directory
+            plots_dir = results_dir / "plots"
+            plots_dir.mkdir(parents=True, exist_ok=True)
+            fig_parallel_all.savefig(plots_dir / f"optimizer_rankings_parallel_{ranking_metric}_all.png", dpi=300, bbox_inches="tight")
+            fig_parallel_with.savefig(plots_dir / f"optimizer_rankings_parallel_{ranking_metric}_with_priors.png", dpi=300, bbox_inches="tight")
+            fig_parallel_without.savefig(plots_dir / f"optimizer_rankings_parallel_{ranking_metric}_without_priors.png", dpi=300, bbox_inches="tight")
+            plt.close(fig_parallel_all)
+            plt.close(fig_parallel_with)
+            plt.close(fig_parallel_without)
+            print(f"✓ Saved: {plots_dir / f'optimizer_rankings_parallel_{ranking_metric}_all.png'}")
+            print(f"✓ Saved: {plots_dir / f'optimizer_rankings_parallel_{ranking_metric}_with_priors.png'}")
+            print(f"✓ Saved: {plots_dir / f'optimizer_rankings_parallel_{ranking_metric}_without_priors.png'}")
+        except Exception as e:
+            print(f"✗ Error plotting parallel coordinates: {e}")
+            import traceback
+            traceback.print_exc()
     
     print(f"\n{'='*60}")
     print("Plot generation completed!")

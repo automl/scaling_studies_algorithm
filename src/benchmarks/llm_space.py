@@ -13,19 +13,36 @@ from pathlib import Path
 import neps
 
 
-from llm_bench.api import LLMBenchmark, LLMConfig
+from dep.scan_bench_suite.scan_benchmark.llm.api import LLMBenchmark, LLMConfig, LLMTarget
 
-LLM_TARGETS = ["valid_loss", "test_loss", "hellaswag_acc", "arc_challenge_acc", "arc_easy_acc",
-                                  "copa_acc", "openbookqa_acc", "piqa_acc"]
+LLM_TARGETS = [
+    LLMTarget.VAL_LOSS,
+    LLMTarget.TEST_LOSS,
+    # LLMTarget.HELMASWAG_ACC,
+    # LLMTarget.ARC_CHALLENGE_ACC,
+    # LLMTarget.ARC_EASY_ACC,
+    # LLMTarget.COPA_ACC,
+    # LLMTarget.OPENBOOKQA_ACC,
+    # LLMTarget.PIQA_ACC
+]
+
 def get_benchmark(seed: int = 1) -> LLMBenchmark:
     return LLMBenchmark(
-        targets=LLM_TARGETS, 
-        # targets=["valid_loss"],
-        seed=seed,)
+        targets=LLM_TARGETS)
+
+def find_closest_divisible_n_heads(d_model: int, n_heads: int) -> int:
+    for nh in range(n_heads, 6, -2):
+        if d_model % nh == 0:
+            return nh
+    for nh in range(n_heads, 24, +2):
+        if d_model % nh == 0:
+            return nh
+    
 
 def parameters_estimator(**conf):
     conf["d_model"] = int(conf["d_model"]) * 64
-    conf["n_heads"] = int(conf["n_heads"]) * 2
+    conf["n_heads"] = find_closest_divisible_n_heads(conf["d_model"], int(conf["n_heads"]) * 2)
+    
     conf["n_layers"] = int(conf["n_layers"])
     conf["warmup_steps"] = 0.1
     config = LLMConfig(**conf)
@@ -35,7 +52,8 @@ def parameters_estimator(**conf):
 def evaluate_pipeline_wrapper(bench: LLMBenchmark, lc_aware: bool = False):
     def evaluate_pipeline(lr, weight_decay, beta1, beta2, cooldown_steps, d_model, n_layers, n_heads, n_tokens) -> dict:
         d_model = 64 * int(d_model)
-        n_heads = 2 * int(n_heads)
+        n_heads = find_closest_divisible_n_heads(d_model, 2 * int(n_heads))
+
         config = LLMConfig(
             d_model=d_model,
             n_layers=int(n_layers),
@@ -71,7 +89,7 @@ def evaluate_pipeline_wrapper(bench: LLMBenchmark, lc_aware: bool = False):
         except Exception as e:
             return {
                 "objective_to_minimize": float('nan'), 
-                "cost": float('nan'), 
+                "cost": float(config.compute_model_stats()["total_training_flops"]), 
                 "learning_curve": lc,
                 "info_dict": {
                     "n_param": int(config.compute_model_stats()["total_params"]),
@@ -99,7 +117,7 @@ def evaluate_pipeline_wrapper(bench: LLMBenchmark, lc_aware: bool = False):
 
 def flops_estimator(**conf):
     conf["d_model"] = int(conf["d_model"]) * 64
-    conf["n_heads"] = int(conf["n_heads"]) * 2
+    conf["n_heads"] = find_closest_divisible_n_heads(conf["d_model"], int(conf["n_heads"]) * 2)
     conf["n_layers"] = int(conf["n_layers"])
     conf["warmup_steps"] = 0.1
     config = LLMConfig(**conf)
@@ -164,11 +182,11 @@ logging.basicConfig(level=logging.INFO,)
 
 def get_macro_params_bounds(bench: LLMBenchmark) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     max_flop_conf = dict(
-        lr=1.0e-1, weight_decay=2.0e-1, beta1=0.9, beta2=0.999, cooldown_steps=0.3, d_model=18, n_layers=24, n_heads=12, n_tokens=1.6e10
+        lr=1.0e-2, weight_decay=2.0e-1, beta1=0.9, beta2=0.999, cooldown_steps=0.3, d_model=18, n_layers=24, n_heads=12, n_tokens=1.6e10
     )
     
     min_flop_conf = dict(
-        lr=1.0e-5, weight_decay=1.0e-3, beta1=0.8, beta2=0.9, cooldown_steps=0, d_model=4, n_layers=4, n_heads=3, n_tokens=2e8
+        lr=1.0e-2, weight_decay=2.0e-1, beta1=0.8, beta2=0.9, cooldown_steps=0, d_model=4, n_layers=4, n_heads=4, n_tokens=2e8
     )
 
     res = evaluate_pipeline_wrapper(bench)(
@@ -190,8 +208,8 @@ def get_macro_params_bounds(bench: LLMBenchmark) -> tuple[tuple[float, float, fl
     print(f"{min_params:e} parameters, {min_data:e} data points, total flops: {min_flops:e}")
     return ((min_params, min_data, min_flops), (max_params, max_data, max_flops))
 
-# 1.020000e+02 parameters, 6.000000e+07 data points, total flops: 5.970000e+08
-# 2.000000e+00 parameters, 6.000000e+05 data points, total flops: 3.600000e+04
+# 4.401815e+08 parameters, 1.600000e+10 data points, total flops: 5.312364e+19
+# 1.628109e+07 parameters, 2.000000e+08 data points, total flops: 2.456771e+16
 
 def get_pipeline_space():
     space = PipelineScalingConfig()
@@ -210,11 +228,11 @@ if __name__ == '__main__':
         "weight_decay": 0.09770574099395841
       }
 
-    res = evaluate_pipeline_wrapper(get_benchmark())(
-        **min_flop_conf
-    )
-    print(f"-----{res}------")
-#     get_macro_params_bounds(get_benchmark())
+    # res = evaluate_pipeline_wrapper(get_benchmark())(
+    #     **min_flop_conf
+    # )
+    # print(f"-----{res}------")
+    get_macro_params_bounds(get_benchmark())
 #     parser = argparse.ArgumentParser(description='Run scaling study on LLM benchmark')
 #     parser.add_argument('--study-name', type=str, required=True, 
 #                         help='Name of the study to be created in neptune')

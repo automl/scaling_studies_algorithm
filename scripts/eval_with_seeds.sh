@@ -1,11 +1,11 @@
 #!/bin/bash
 
-#SBATCH --partition=mldlc2_gpu-l40s
+#SBATCH --partition=dllabdlc_gpu-rtx2080
 #SBATCH --mem=140G
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=1
 #SBATCH --job-name=eval_with_seeds
-#SBATCH --output=%x-%j.log
+#SBATCH --output=/home/alipourn/scaling_studies_algorithm/logs/%x-%j.log
 
 source /home/alipourn/miniconda3/etc/profile.d/conda.sh
 conda activate scaling
@@ -16,16 +16,18 @@ export CUDA_VISIBLE_DEVICES=0
 benchmark="${1:-openclip}"
 
 
-for seed in 40; do
+for seed in 49 50; do
     # python -m src.run --optimizer grid_search --benchmark $benchmark --seed $seed 
-    python -m src.run --optimizer carbs --benchmark $benchmark --seed $seed &
-    python -m src.run --optimizer carbs --benchmark $benchmark --seed $seed  --use-priors &
-    # python -m src.run --optimizer chinchilla_approach1 --benchmark $benchmark --seed $seed  &
+    # python -m src.run --optimizer carbs --benchmark $benchmark --seed $seed &
+    # python -m src.run --optimizer carbs --benchmark $benchmark --seed $seed  --use-priors &
+    python -m src.run --optimizer chinchilla_approach1 --benchmark $benchmark --seed $seed  &
     # python -m src.run --optimizer chinchilla_approach1 --benchmark $benchmark --seed $seed  --use-priors &
     # python -m src.run --optimizer chinchilla_approach2 --benchmark $benchmark --seed $seed  &
     # python -m src.run --optimizer chinchilla_approach2 --benchmark $benchmark --seed $seed  --use-priors &
     # python -m src.run --optimizer random_search --benchmark $benchmark --seed $seed &
     # python -m src.run --optimizer random_search --benchmark $benchmark --seed $seed  --use-priors &
 done
+
+# python -m src.run --optimizer chinchilla_approach1 --benchmark llm --seed 47
 wait
 echo "All runs completed"

@@ -114,6 +114,60 @@ def load_pareto_info(output_dir: Path | str) -> dict[str, list] | None:
             return json.load(f)
     return None
 
+
+def _get_extrapolation_cache_file(root_directory: Path | str, last_trial_id: float, target_flops: float) -> Path:
+    root_directory = Path(root_directory)
+    summary_dir = root_directory / "summary"
+    target_flops_str = str(target_flops).replace("/", "_")
+    return summary_dir / f"extrapolation_trial_{last_trial_id}_target_{target_flops_str}.json"
+
+
+def _json_serialize(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_serialize(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_serialize(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_serialize(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _load_extrapolation_cache(
+    root_directory: Path | str,
+    last_trial_id: float,
+    target_flops: float,
+) -> dict[str, Any] | None:
+    cache_file = _get_extrapolation_cache_file(root_directory, last_trial_id, target_flops)
+    if not cache_file.exists():
+        return None
+
+    try:
+        with open(cache_file, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to read extrapolation cache {cache_file}: {e}")
+        return None
+
+
+def _save_extrapolation_cache(
+    root_directory: Path | str,
+    last_trial_id: float,
+    target_flops: float,
+    extrapolation_data: dict[str, Any],
+) -> None:
+    cache_file = _get_extrapolation_cache_file(root_directory, last_trial_id, target_flops)
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(cache_file, "w") as f:
+        json.dump(_json_serialize(extrapolation_data), f, indent=2)
+    logger.info(f"Saved extrapolation cache to {cache_file}")
+
 def extrapolate_all(
     root_directories: list[Path] | list[str],
     optimizer_ask,  # Can be AskFunction or optimizer instance
@@ -226,6 +280,39 @@ def create_aggregated_pareto_plots(
     fig3.savefig(summary_dir / "aggregated_flops_vs_data.png", dpi=150, bbox_inches='tight')
     logger.info(f"Saved aggregated flops vs data plot to {summary_dir / 'aggregated_flops_vs_data.png'}")
     plt.close(fig3)
+
+def extrapolate_single(
+    root_directory: Path | str,
+    optimizer_ask,  # Can be AskFunction or optimizer instance with extrapolate method
+    last_trial_id: float,
+    target_flops: float,
+) -> dict[str, Any] | None:
+    """Extrapolate best configuration using the optimizer."""
+    cached_data = _load_extrapolation_cache(root_directory, last_trial_id, target_flops)
+    if cached_data is not None:
+        logger.info(
+            f"Loaded extrapolation cache for {root_directory}, trial={last_trial_id}, target_flops={target_flops}"
+        )
+        return cached_data
+
+    state, trials = _load_neps_state_with_retry(root_directory)
+    trials = dict(sorted(trials.items(), key=lambda x: x[1].id)[:last_trial_id+1])
+    
+    # Check if optimizer has extrapolate method
+    if not hasattr(optimizer_ask, "extrapolate_for_target_flops"):
+        logger.info(
+            f"Optimizer {type(optimizer_ask)} does not support extrapolation for specified FLOPs."
+        )
+        return None
+    optimal_points = {}
+    extrapolation_data = optimizer_ask.extrapolate_for_target_flops(trials=trials, optimal_points=optimal_points, target_flops=[target_flops])
+
+    try:
+        _save_extrapolation_cache(root_directory, last_trial_id, target_flops, extrapolation_data)
+    except Exception as e:
+        logger.warning(f"Failed to save extrapolation cache for {root_directory}: {e}")
+    
+    return extrapolation_data
 
 def extrapolate(
     root_directory: Path | str,
