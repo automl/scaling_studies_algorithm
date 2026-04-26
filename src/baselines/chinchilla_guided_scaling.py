@@ -1150,11 +1150,13 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             'fits': fits,
         }
 
-    def get_power_law_curvature(self, trials: Mapping[str, Trial]) -> ScalingLawParameters:
+    @classmethod
+    def get_power_law_curvature(cls, N, D, L) -> ScalingLawParameters:
+        # N, D, L are np arrays of the same length, containing the number of parameters, number of datapoints, and observed loss for each trial.
         # L = E + A / N^alpha + B / D^beta
         # where A = e^a and B = e^b
 
-        def huber(residual, delta=1.0):
+        def huber(residual, delta=1e-3):
             abs_r = np.abs(residual)
             return np.where(
                 abs_r <= delta,
@@ -1166,8 +1168,8 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             E, a, b, alpha, beta = theta
             
             # Clip a and b to prevent overflow (exp(20) ≈ 4.85e8)
-            a_clipped = np.clip(a, -10, 10)
-            b_clipped = np.clip(b, -10, 10)
+            a_clipped = np.clip(a, -40, 40)
+            b_clipped = np.clip(b, -40, 40)
             A = np.exp(a_clipped)
             B = np.exp(b_clipped)
             
@@ -1183,10 +1185,10 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 L_hat = E + A / N_alpha + B / D_beta
             
             # Check for NaN or Inf
-            if np.any(~np.isfinite(L_hat)):
+            if np.any(~np.isfinite(L_hat)) or np.any(L_hat <= 0):
                 return 1e10  # Large penalty for invalid values
             
-            residual = L_hat - L
+            residual = np.log(L_hat) - np.log(L)
             loss = np.sum(huber(residual))
             
             if not np.isfinite(loss):
@@ -1194,110 +1196,70 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 
             return loss
 
-
-        # use_lc_aware = self.strategy in ["approach1", "gemstones"]
-        # use_pareto_fit = self.strategy in ["approach1", "approach2"]
-        # fit_func = fit_pareto_front_loglog if use_pareto_fit else fit_convex_hull_loglog
-        # result = fit_func(trials, lc_aware=use_lc_aware)
-        # pareto_rows = result[5]
-        
-        # l_list = [r[2] for r in pareto_rows]  # flops
-        # n_list = [float(r[0]) for r in pareto_rows]  # n_params
-        # d_list = [float(r[1]) for r in pareto_rows]  # n_data
-
-        l_list, n_list, d_list = [], [], []
-        for trial in trials.values():
-            if trial.report is None or trial.report.objective_to_minimize is None or not np.isfinite(trial.report.objective_to_minimize) or isinstance(trial.report.objective_to_minimize, Sequence):
-                continue
-            if trial.report.extra is None:
-                logger.warning(f"Trial {trial.id} has no extra data. Skipping.")
-                continue
-            try:
-                n_list.append(trial.report.extra[self.N_PARAM_KEY])
-                d_list.append(trial.report.extra[self.N_DATA_KEY])
-                l_list.append(float(trial.report.objective_to_minimize))
-            except KeyError as e:
-                logger.error(f"Trial {trial.id} missing required key {e} in extra. Skipping.")
-                continue
-            except Exception as e:
-                logger.error(f"Skipping trial {trial.id}: {e}")
-                continue
-
-        if len(l_list) < 5:
-            raise ValueError("Not enough data points to fit scaling law.")
-
-        N = np.array(n_list)
-        D = np.array(d_list)
-        L = np.array(l_list)
-
         # Adaptive initialization grid based on data size
         # For small datasets, use fewer initializations
-        num_points = len(l_list)
+        num_points = len(L)
+        min_L = np.min(L)
         if num_points <= 10:
-            # For 5-10 points: use minimal grid (8-20 initializations)
             initialization = [
-                (0, 5, 5, 0.5, 0.5),
-                (-1, 0, 0, 0.3, 0.3),
-                (1, 10, 10, 0.6, 0.6),
-                (0.5, 5, 10, 0.4, 0.5),
-                (0, 10, 5, 0.5, 0.4),
-                (-0.5, 0, 10, 0.35, 0.6),
-                (0, 0, 0, 0.45, 0.55),
-                (0.5, 5, 5, 0.55, 0.45),
-                (np.log(np.mean(L)), 5, 5, 0.5, 0.5),  # Data-informed E
+                (min_L * 0.5, 6, 6, 0.5, 0.5),
+                (min_L * 0.9, 5, 5, 0.5, 0.5),
+                (min_L * 0.1, 7, 7, 0.5, 0.5),
+                # Add a few more safe ones
             ]
         else:
-            # For 11+ points: use moderate grid with restricted alpha/beta bounds
             initialization = list(itertools.product(
-                [-1, -0.5, 0, 0.5, 1],        # E (5)
-                [0, 5, 10, 15, 20, 25],       # a (6)
-                [0, 5, 10, 15, 20, 25],       # b (6)
-                [0.3, 0.35, 0.5, 0.65],       # alpha (4) - constrained to [0.3, 0.7]
-                [0.3, 0.35, 0.5, 0.65],       # beta (4) - constrained to [0.3, 0.7]
+                [min_L * 0.1, min_L * 0.5, min_L * 0.9],  # E (guess based on actual min loss)
+                [0, 10, 20, 30],                          # a
+                [0, 10, 20, 30],                          # b
+                [0.3, 0.5, 0.7],                          # alpha
+                [0.3, 0.5, 0.7],                          # beta
             ))
 
         best_result = None
         best_loss = float("inf")
         early_stop_threshold = best_loss * 0.1  # Stop if loss is 10x better than initial
+        N_scale = np.max(N)
+        D_scale = np.max(D)
 
+        N_norm = N / N_scale
+        D_norm = D / D_scale
+        
         for idx, theta0 in enumerate(initialization):
-            # Early stopping: after finding a good solution, try only a few more
-            if idx > 20 and best_loss < early_stop_threshold:
-                logger.info(f"Early stopping at iteration {idx}: found good solution with loss={best_loss:.6f}")
-                break
-
             try:
-                # Bounds to prevent numerical issues
-                # E: unbounded (can be negative or positive)
-                # a, b: [0, 10] to prevent exp overflow
-                # alpha, beta: [0.2, 0.7] for reasonable power law exponents
                 bounds = [
-                    (None, None),      # E
-                    (0, 10),         # a
-                    (0, 10),         # b
-                    (0.2, 0.7),        # alpha
-                    (0.2, 0.7),        # beta
+                    (1e-5, np.min(L)), # E cannot be greater than the lowest observed loss
+                    (1e-5, 10),         # a
+                    (1e-5, 10),         # b
+                    (0.1, 1.0),        # alpha (widened slightly to let optimizer breathe)
+                    (0.1, 1.0),        # beta
                 ]
                 
                 res = minimize(
                     objective,
                     theta0,
-                    args=(N, D, L),
+                    args=(N_norm, D_norm, L),
                     method="L-BFGS-B",
                     bounds=bounds,
                 )
-                if res.fun < best_loss:
+                
+                # Keep track of the best global minimum
+                if res.success and res.fun < best_loss:
                     best_loss = res.fun
                     best_result = res
+                    
             except Exception as e:
-                raise e
+                continue # Don't crash the whole grid search if one init fails
 
         if best_result is None:
             raise ValueError("Could not fit scaling law with any initialization.")
 
         E, a, b, alpha, beta = best_result.x
-        A = np.exp(np.clip(a, -10, 10))
-        B = np.exp(np.clip(b, -10, 10))
+        A = np.exp(np.clip(a, 1e-5, 10))
+        B = np.exp(np.clip(b, 1e-5, 10))
+        A = A * (N_scale ** alpha)
+        B = B * (D_scale ** beta)
+        
         return ScalingLawParameters(E=E, A=A, B=B, alpha=alpha, beta=beta)
     
     @classmethod

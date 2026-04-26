@@ -22,6 +22,24 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
+def load_or_generate_pareto_info(benchmark_name: str) -> dict[str, list]:
+    comprehensive_study_root_dir = (
+        f"/work/dlclarge1/alipourn-benchmark_res/{benchmark_name}/"
+        f"{OptimizerEnum.GRID_SEARCH}/seed_40"
+    )
+    summary_dir = Path(comprehensive_study_root_dir) / "summary"
+        
+    # Try to load pareto_info from JSON, or generate and save it
+    pareto_info = load_pareto_info(summary_dir)
+    if pareto_info is None:
+        pareto_info = get_true_pareto_front(comprehensive_study_root_dir)
+        save_pareto_info(pareto_info, summary_dir)
+    if benchmark_name == "openclip":
+        # Convert flops to billions for consistency
+        pareto_info["flops"] = [f * 1e9 for f in pareto_info["flops"]]
+    return pareto_info
+            
+
 def _load_neps_state(root_directory: Path | str) -> tuple[Any, Any]:
     """Load NePSState and trials from a directory."""
     root_directory = Path(root_directory)
