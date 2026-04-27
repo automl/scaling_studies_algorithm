@@ -17,7 +17,7 @@ from dep.scan_bench_suite.scan_benchmark.llm.api import LLMBenchmark, LLMConfig,
 
 LLM_TARGETS = [
     LLMTarget.VAL_LOSS,
-    LLMTarget.TEST_LOSS,
+    # LLMTarget.TEST_LOSS,
     # LLMTarget.HELMASWAG_ACC,
     # LLMTarget.ARC_CHALLENGE_ACC,
     # LLMTarget.ARC_EASY_ACC,

@@ -103,12 +103,15 @@ def get_true_pareto_front(root_directory: Path | str) -> dict[str, list]:
     
     result = fit_pareto_front_loglog(trials, lc_aware=False)
     pareto_rows = result[5]
+    pareto_trial_ids = result[7]
+    pareto_configs = [trial.config for trial in trials.values() if trial.id in pareto_trial_ids]
     
     return {
         "loss": [r[2] for r in pareto_rows],
         "flops": [r[3] for r in pareto_rows],
         "n_params": [float(r[0]) for r in pareto_rows],
         "n_data": [float(r[1]) for r in pareto_rows],
+        "configs": pareto_configs,
     }
 
 def save_pareto_info(pareto_info: dict, output_dir: Path | str) -> None:

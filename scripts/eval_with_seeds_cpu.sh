@@ -15,20 +15,20 @@ export PYTHONPATH="/home/alipourn/scaling_studies_algorithm:$PYTHONPATH"
 
 benchmark="${1:-openclip}"
 
-# python -m src.baselines.utils.extrapolate
+python -m src.plotting.plot
 
-# for seed in 40 41 42 43 44 45 46 47 48 49 50; do
-for seed in 41; do
-#     # python -m src.run --optimizer grid_search --benchmark $benchmark --seed $seed 
-#     # python -m src.run --optimizer carbs --benchmark $benchmark --seed $seed &
-#     # python -m src.run --optimizer carbs --benchmark $benchmark --seed $seed  --use-priors &
-    python -m src.run --optimizer chinchilla_approach1 --benchmark $benchmark --seed $seed  &
-#     python -m src.run --optimizer chinchilla_approach1 --benchmark $benchmark --seed $seed  --use-priors &
-#     # python -m src.run --optimizer chinchilla_approach2 --benchmark $benchmark --seed $seed  &
-#     # python -m src.run --optimizer chinchilla_approach2 --benchmark $benchmark --seed $seed  --use-priors &
-#     # python -m src.run --optimizer random_search --benchmark $benchmark --seed $seed &
-#     # python -m src.run --optimizer random_search --benchmark $benchmark --seed $seed  --use-priors &
-done
+# # for seed in 40 41 42 43 44 45 46 47 48 49 50; do
+# for seed in 41; do
+# #     # python -m src.run --optimizer grid_search --benchmark $benchmark --seed $seed 
+# #     # python -m src.run --optimizer carbs --benchmark $benchmark --seed $seed &
+# #     # python -m src.run --optimizer carbs --benchmark $benchmark --seed $seed  --use-priors &
+#     python -m src.run --optimizer chinchilla_approach1 --benchmark $benchmark --seed $seed  &
+# #     python -m src.run --optimizer chinchilla_approach1 --benchmark $benchmark --seed $seed  --use-priors &
+# #     # python -m src.run --optimizer chinchilla_approach2 --benchmark $benchmark --seed $seed  &
+# #     # python -m src.run --optimizer chinchilla_approach2 --benchmark $benchmark --seed $seed  --use-priors &
+# #     # python -m src.run --optimizer random_search --benchmark $benchmark --seed $seed &
+# #     # python -m src.run --optimizer random_search --benchmark $benchmark --seed $seed  --use-priors &
+# done
 
 # python -m src.run --optimizer chinchilla_approach2 --benchmark llm --seed 40
 wait

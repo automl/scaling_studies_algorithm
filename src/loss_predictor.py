@@ -5,7 +5,7 @@ import numpy as np
 from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer
 from src.baselines.chinchilla_guided_scaling import ScalingLawParameters
 from src.baselines.chinchilla_guided_scaling import Chinchilla_Guided_Scaling
-from src.scaling_law_fit import fit_loglog_power_law, predict_from_loglog_fit
+from src.scaling_law_fit import fit_power_law, predict_from_loglog_fit
 
 class LossPredictorTypes(Enum):
     KAPLAN = "Kaplan"
@@ -59,7 +59,7 @@ def predict_loss(
             raise ValueError("Could not compute a Pareto front from the provided rows")
 
         pareto_flops, pareto_losses = res
-        fit_result = fit_loglog_power_law(
+        fit_result = fit_power_law(
             np.asarray(pareto_flops, dtype=float),
             np.asarray(pareto_losses, dtype=float),
         )
@@ -121,22 +121,33 @@ def predict_loss(
             L=losses,
         )
 
-        # Use the closest observed row as a reference and preserve its D/N ratio.
-        ref_idx = int(np.argmin(np.abs(flops - target_flop)))
-        n_ref = float(n_params[ref_idx])
-        d_ref = float(n_tokens[ref_idx])
-        flop_ref = float(flops[ref_idx])
+        alpha = float(scaling_params.alpha)
+        beta = float(scaling_params.beta)
+        A = float(scaling_params.A)
+        B = float(scaling_params.B)
 
-        if n_ref <= 0 or d_ref <= 0 or flop_ref <= 0:
-            raise ValueError("Invalid reference row for Chinchilla prediction")
+        alpha_plus_beta = alpha + beta
+        if alpha_plus_beta <= 0:
+            raise ValueError("Invalid Chinchilla parameters: alpha + beta must be positive")
+        if alpha <= 0 or beta <= 0:
+            raise ValueError("Invalid Chinchilla parameters: alpha and beta must be positive")
+        if A <= 0 or B <= 0:
+            raise ValueError("Invalid Chinchilla parameters: A and B must be positive")
 
-        ratio_d_over_n = d_ref / n_ref
-        flop_constant = flop_ref / (n_ref * d_ref)
-        if ratio_d_over_n <= 0 or flop_constant <= 0:
-            raise ValueError("Could not derive a valid FLOPs relation from reference row")
+        # Closed-form optimum under compute constraint C = 6 * N * D.
+        a = beta / alpha_plus_beta
+        b = alpha / alpha_plus_beta
+        G = ((alpha * A) / (beta * B)) ** (1.0 / alpha_plus_beta)
 
-        n_target = float(np.sqrt(target_flop / (flop_constant * ratio_d_over_n)))
-        d_target = float(ratio_d_over_n * n_target)
+        c_div_6 = target_flop / 6.0
+        if c_div_6 <= 0:
+            raise ValueError("target_flop must be positive")
+
+        n_target = float(G * (c_div_6 ** a))
+        d_target = float((1.0 / G) * (c_div_6 ** b))
+
+        if n_target <= 0 or d_target <= 0:
+            raise ValueError("Could not derive positive optimal N and D from Chinchilla fit")
 
         predicted_loss = float(
             scaling_params.E

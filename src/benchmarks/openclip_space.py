@@ -8,7 +8,7 @@ from dep.scan_bench_suite.scan_benchmark.vlm.api import VLMBenchmark, VLMConfig,
 
 OPENCLIP_TARGETS = [
     VLMTarget.VAL_LOSS, 
-    VLMTarget.TEST_LOSS,
+    # VLMTarget.TEST_LOSS,
     # VLMTarget.RETRIEVAL_MSCOCO, 
     # VLMTarget.CIFAR10, 
     # VLMTarget.VTAB_CIFAR100, 
