@@ -29,7 +29,7 @@ if __name__ == '__main__':
     optimizers = [
         OptimizerEnum.CHINCHILLA_APPROACH1, 
         OptimizerEnum.CHINCHILLA_APPROACH2,
-        OptimizerEnum.CHINCHILLA_GEMSTONES, 
+        # OptimizerEnum.CHINCHILLA_GEMSTONES, 
         OptimizerEnum.RANDOM_SEARCH,
         OptimizerEnum.CARBS,
         # OptimizerEnum.GRID_SEARCH
@@ -71,7 +71,6 @@ if __name__ == '__main__':
                     pipeline_space=benchmark.space,
                     root_directory=root_dir,
                     cost_to_spend=benchmark.max_evaluation_flops if optimizer_name != OptimizerEnum.GRID_SEARCH else None, # we want to run the full grid search
-                    # cost_to_spend=0,
                     worker_id=f"worker_1-{socket.gethostname()}-{os.getpid()}",
                     overwrite_root_directory=True,
                     optimizer=optimizer,

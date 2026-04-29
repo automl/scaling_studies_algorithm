@@ -196,7 +196,8 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         
         # Create dynamic data grid using Chinchilla principle: find data_param values for different multipliers
         # Target multipliers: 5*N, 10*N, 20*N, 80*N (or adjusted based on domain)
-        data_multipliers = [5, 10, 20, 80]
+        # data_multipliers = [5, 10, 20, 80]
+        data_multipliers = [400, 800, 1600, 3200]
         data_grid = []
         
         for multiplier in data_multipliers:
@@ -266,7 +267,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             
             # Find data_param values for each multiplier using the updated N
             updated_data_grid = []
-            for multiplier in [5, 10, 20, 80]:
+            for multiplier in data_multipliers:
                 data_param_value = self._find_data_param_value_for_ratio(current_config, multiplier, data_param)
                 updated_data_grid.append(data_param_value)
             

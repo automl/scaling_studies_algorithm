@@ -117,30 +117,30 @@ def evaluate_pipeline_wrapper(bench: VLMBenchmark, lc_aware: bool = False):
             for i in range(1, 4 + 1): # num_points in learning curve
                 config.training_progress = i / 4
                 confs.append(copy.deepcopy(config))
-                try:
-                    results = bench.query_many(confs)
-                except Exception as e:
+            try:
+                results = bench.query_many(confs)
+            except Exception as e:
 
-                    config.training_progress = 1.0
-                    stats = bench.get_model_stats(config)
-                    results = [{"failed": True, "model_stats": stats, "predictions": None}]
-                for result in results:
-                    if result["failed"]:
-                        return {
-                            "objective_to_minimize": float('nan'), 
-                            "cost": float(result["model_stats"]["total_gflops"]), 
-                            "learning_curve": None,
-                            "info_dict": {
-                                "n_param": int(result["model_stats"]["params"]),
-                                "flops": float(result["model_stats"]["total_gflops"]),
-                                "n_data": train_num_samples,
-                                "predictions": result["predictions"],
-                                "model_stats": result["model_stats"],
-                            },
-                        }
-                    n_data = config.training_progress * train_num_samples # num tokens seen so far
-                    flops = float(result["model_stats"]["total_gflops"])
-                    lc.append((n_data, flops, float(result["predictions"][VLMTarget.VAL_LOSS.value]["mean"])))
+                config.training_progress = 1.0
+                stats = bench.get_model_stats(config)
+                results = [{"failed": True, "model_stats": stats, "predictions": None}]
+            for result in results:
+                if result["failed"]:
+                    return {
+                        "objective_to_minimize": float('nan'), 
+                        "cost": float(result["model_stats"]["total_gflops"]), 
+                        "learning_curve": None,
+                        "info_dict": {
+                            "n_param": int(result["model_stats"]["params"]),
+                            "flops": float(result["model_stats"]["total_gflops"]),
+                            "n_data": train_num_samples,
+                            "predictions": result["predictions"],
+                            "model_stats": result["model_stats"],
+                        },
+                    }
+                n_data = config.training_progress * train_num_samples # num tokens seen so far
+                flops = float(result["model_stats"]["total_gflops"])
+                lc.append((n_data, flops, float(result["predictions"][VLMTarget.VAL_LOSS.value]["mean"])))
         config.training_progress = 1.0 # for double caution
         result = bench.query(config)
         if result["failed"]:

@@ -28,7 +28,7 @@ LLM_TARGETS = [
 
 def get_benchmark(seed: int = 1) -> LLMBenchmark:
     return LLMBenchmark(
-        targets=LLM_TARGETS)
+        targets=LLM_TARGETS) # type: ignore
 
 def find_closest_divisible_n_heads(d_model: int, n_heads: int) -> int:
     for nh in range(n_heads, 6, -2):
@@ -37,6 +37,7 @@ def find_closest_divisible_n_heads(d_model: int, n_heads: int) -> int:
     for nh in range(n_heads, 24, +2):
         if d_model % nh == 0:
             return nh
+    raise ValueError(f"Could not find a valid n_heads for d_model {d_model} close to {n_heads}")
     
 
 def parameters_estimator(**conf):
@@ -216,115 +217,4 @@ def get_pipeline_space():
     return space
 
 if __name__ == '__main__':
-    min_flop_conf = {
-        "beta1": 0.9379220011464974,
-        "beta2": 0.9496847231649144,
-        "cooldown_steps": 0.10457426958306898,
-        "d_model": 6,
-        "lr": 0.00250577194817868,
-        "n_heads": 7,
-        "n_layers": 9,
-        "n_tokens": 7657787207.0,
-        "weight_decay": 0.09770574099395841
-      }
-
-    # res = evaluate_pipeline_wrapper(get_benchmark())(
-    #     **min_flop_conf
-    # )
-    # print(f"-----{res}------")
-    get_macro_params_bounds(get_benchmark())
-#     parser = argparse.ArgumentParser(description='Run scaling study on LLM benchmark')
-#     parser.add_argument('--study-name', type=str, required=True, 
-#                         help='Name of the study to be created in neptune')
-    
-#     parser.add_argument('--optimizer', type=str, default="", choices=[opt.value for opt in OptimizerEnum],
-#                         help='Name of the optimizer to be used')
-    
-    
-#     parser.add_argument('--seed', type=int, default=0,
-#                         help='Seed for reproducability')
-    
-    
-#     parser.add_argument('--use-priors', action='store_true',
-#                         help='Use prior for the sampling approach')
-
-    
-#     args = parser.parse_args()
-    
-#     pipeline_space = PipelineScalingConfig()
-
-#     bench = get_benchmark()
-
-#     (min_params, min_data, min_flops), (max_params, max_data, max_flops) = get_macro_params_bounds(bench)
-#     print(f"Macro bounds - Params: ({min_params:e}, {max_params:e}), Data: ({min_data:e}, {max_data:e}), Flops: ({min_flops:e}, {max_flops:e})")
-    
-    
-#     optimizers = [
-#         OptimizerEnum.CHINCHILLA_APPROACH1, 
-#         OptimizerEnum.CHINCHILLA_APPROACH2,
-#         OptimizerEnum.CHINCHILLA_GEMSTONES, 
-#         OptimizerEnum.RANDOM_SEARCH,
-#         OptimizerEnum.CARBS, 
-#         # OptimizerEnum.GRID_SEARCH
-#         ] if args.optimizer == "" else [OptimizerEnum(args.optimizer)]
-    
-
-#     for optimizer_name in optimizers:
-#         lc_aware = optimizer_name in [OptimizerEnum.CHINCHILLA_APPROACH1.value, OptimizerEnum.CHINCHILLA_GEMSTONES.value]
-#         get_optimizer = get_optimizer_wrapper(
-#             pipeline_space=pipeline_space,
-#             evaluate_pipeline=evaluate_pipeline_wrapper(
-#                 bench, 
-#                 lc_aware=lc_aware,
-#             ),
-#             param_estimator=parameters_estimator,
-#             seen_datapoints_estimator=seen_datapoints_estimator,
-#             flops_estimator=flops_estimator,
-#             aspect_ratio_fn=aspect_ratio_fn,
-#             data_parameter_name="n_tokens",
-#             size_per_numerical_dimension={
-#                 "lr": 5,
-#                 "weight_decay": 5,
-#                 "beta1": 1,
-#                 "beta2": 1,
-#                 "cooldown_steps": 1,
-#                 "d_model": 5,
-#                 "n_layers": 5,
-#                 "n_heads": 1,
-#                 "n_tokens": 10,
-#             } # type: ignore
-#     )
-#         seed_range = [40] if args.seed == 0 else [args.seed]
-#         for seed in seed_range:
-#             print(f"Running {optimizer_name} with seed {seed}...")
-#             # set seeds
-#             random.seed(seed)
-#             np.random.seed(seed)
-#             torch.manual_seed(seed)
-#             optimizer, kwargs = get_optimizer(
-#                 OptimizerEnum(optimizer_name),
-#                 max_evaluation_flops=total_eval_flops,
-#                 max_target_flops=max_target_flops,
-#                 seed=seed,
-#                 use_priors=args.use_priors,
-#             )
-#             # Override evaluate_pipeline in kwargs with the lc_aware version
-#             if 'evaluate_pipeline' not in kwargs:
-#                 kwargs['evaluate_pipeline'] = evaluate_pipeline_wrapper(bench, lc_aware=lc_aware)
-#             try:
-#                 neps.run(
-#                     pipeline_space=pipeline_space,
-#                     root_directory=f"/work/dlclarge1/alipourn-benchmark_res/{args.study_name}/{optimizer_name + "_with_priors" if args.use_priors else optimizer_name}/seed_{seed}",
-#                     # root_directory=f"results/{args.study_name}/{optimizer_name}/seed_{seed}",
-#                     cost_to_spend=total_eval_flops if optimizer_name != OptimizerEnum.GRID_SEARCH else None, # we want to run the full grid search
-#                     # cost_to_spend=0,
-#                     worker_id=f"worker_1-{socket.gethostname()}-{os.getpid()}",
-#                     overwrite_root_directory=True,
-#                     optimizer=optimizer,
-#                     **kwargs,
-#                 )
-#             except Exception as e:
-#                 print(f"Error occurred while running {optimizer_name} with seed {seed}: {e}")
-#                 raise e
-#         print(f"Finished {optimizer_name}!")
-            
+    ...

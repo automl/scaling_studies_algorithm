@@ -4,10 +4,12 @@ from typing import Callable
 from enum import Enum
 import src.benchmarks.openclip_space as openclip
 import src.benchmarks.llm_space as llm
+import src.benchmarks.tabpfn_space as tabpfn
 
 class BenchmarkEnum(str, Enum):
     OPENCLIP = "openclip"
     LLM = "llm"
+    TABPFN = "tabpfn"
 
 @dataclass
 class BenchmarkConfig:
@@ -22,7 +24,10 @@ class BenchmarkConfig:
     max_flops: float
     min_flops: float
 
-def get_benchmark(benchmark: BenchmarkEnum, lc_aware: bool) -> BenchmarkConfig:
+def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool) -> BenchmarkConfig:
+    if isinstance(benchmark, str):
+        benchmark = BenchmarkEnum(benchmark)
+
     match benchmark:
         case BenchmarkEnum.OPENCLIP: 
             bench = openclip.get_benchmark()
@@ -59,6 +64,26 @@ def get_benchmark(benchmark: BenchmarkEnum, lc_aware: bool) -> BenchmarkConfig:
                 max_evaluation_flops=total_eval_flops,
                 aspect_ratio_fn=llm.aspect_ratio_fn,
                 data_parameter_name="n_tokens",
+                max_flops=max_flops,
+                min_flops=min_flops
+            )
+        case BenchmarkEnum.TABPFN:
+            bench = tabpfn.get_benchmark()
+            # (min_params, min_data, min_flops), (max_params, max_data, max_flops) = tabpfn.get_macro_params_bounds(bench)
+            # print(f"Macro bounds - Params: ({min_params:e}, {max_params:e}), Data: ({min_data:e}, {max_data:e}), Flops: ({min_flops:e}, {max_flops:e})")
+            max_flops = 3.850136e+15
+            min_flops = 2.921580e+10
+            grid_diagonal = 4 + 3 # d_model + n_layers
+            total_eval_flops = max_flops * grid_diagonal * 0.5
+            return BenchmarkConfig(
+                space=tabpfn.get_pipeline_space(),
+                params_estimator=tabpfn.parameters_estimator_wrapper(bench),
+                seen_datapoints_estimator=tabpfn.seen_datapoints_estimator,
+                flops_estimator=tabpfn.flops_estimator_wrapper(bench),
+                evaluate_pipeline=tabpfn.evaluate_pipeline_wrapper(bench, lc_aware),
+                max_evaluation_flops=total_eval_flops,
+                aspect_ratio_fn=tabpfn.aspect_ratio_fn,
+                data_parameter_name="total_cells",
                 max_flops=max_flops,
                 min_flops=min_flops
             )

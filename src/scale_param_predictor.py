@@ -44,6 +44,27 @@ def _flatten_rows(
     return flattened
 
 
+def _last_point_in_curve(
+    rows: list[tuple[float, float, float, float]] | list[list[tuple[float, float, float, float]]],
+) -> list[tuple[float, float, float, float]]:
+    if not rows:
+        return []
+
+    first = rows[0]
+    if isinstance(first, tuple):
+        return list(rows)  # type: ignore[arg-type]
+
+    flattened: list[tuple[float, float, float, float]] = []
+    for curve in rows:  # type: ignore[assignment]
+        if not isinstance(curve, (list, tuple)):
+            continue
+        if curve and isinstance(curve[-1], tuple) and len(curve[-1]) == 4:
+            flattened.append(curve[-1])
+        elif isinstance(curve, tuple) and len(curve) == 4:
+            flattened.append(curve)
+    return flattened
+
+
 def prepare_rows_for_scale_param_prediction(
     rows: list[tuple[float, float, float, float]] | list[list[tuple[float, float, float, float]]],
 ) -> tuple[list[tuple[float, float, float, float]], list[tuple[float, float, float, float]]]:
@@ -203,7 +224,8 @@ def predict_scale_parameters(
     if predictor_type == ScaleParamPredictorTypes.CHINCHILLA3:
         if target_flop <= 0:
             raise ValueError("target_flop must be positive for Chinchilla prediction")
-
+        if rows[0] and isinstance(rows[0], list):
+            rows = _last_point_in_curve(rows)
         rows_arr = np.asarray(rows, dtype=float)
         if rows_arr.ndim != 2 or rows_arr.shape[1] != 4:
             raise ValueError("rows must be a 2D array-like with shape (n, 4)")
