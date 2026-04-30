@@ -23,6 +23,7 @@ class BenchmarkConfig:
     data_parameter_name: str
     max_flops: float
     min_flops: float
+    best_loss_guess: float
 
 def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool) -> BenchmarkConfig:
     if isinstance(benchmark, str):
@@ -45,7 +46,8 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool) -> BenchmarkCo
                 aspect_ratio_fn=openclip.aspect_ratio_fn,
                 data_parameter_name="train_num_samples",
                 max_flops=max_flops,
-                min_flops=min_flops
+                min_flops=min_flops,
+                best_loss_guess=0.0001
             )
         case BenchmarkEnum.LLM:
             bench = llm.get_benchmark()
@@ -65,7 +67,8 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool) -> BenchmarkCo
                 aspect_ratio_fn=llm.aspect_ratio_fn,
                 data_parameter_name="n_tokens",
                 max_flops=max_flops,
-                min_flops=min_flops
+                min_flops=min_flops,
+                best_loss_guess=1.2,
             )
         case BenchmarkEnum.TABPFN:
             bench = tabpfn.get_benchmark()
@@ -85,7 +88,8 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool) -> BenchmarkCo
                 aspect_ratio_fn=tabpfn.aspect_ratio_fn,
                 data_parameter_name="total_cells",
                 max_flops=max_flops,
-                min_flops=min_flops
+                min_flops=min_flops,
+                best_loss_guess=0.0001,
             )
         case _:
             raise Exception("Benchmark not found")

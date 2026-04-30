@@ -62,6 +62,8 @@ def _split_optimizers_by_priors(
     without_priors = {k: v for k, v in optimizers.items() if "_with_priors" not in k}
     return dict(optimizers), with_priors, without_priors
 
+def _get_best_loss_guess(benchmark_name: str) -> float:
+    return get_benchmark(benchmark_name, lc_aware=False).best_loss_guess
 
 def _placeholder_plot(
     *,
@@ -681,7 +683,7 @@ def plot_optimizer_loss(
     
     # Place legend below with reduced padding
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), 
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.2), 
                ncol=min(4, len(optimizers)), fontsize=15, frameon=True)
     
     plt.tight_layout(rect=[0, 0.10, 1, 1])
@@ -1413,7 +1415,7 @@ def plot_pareto_front_over_flops(
     ax.set_yscale("log")
 
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08),
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.2),
                ncol=min(4, len(optimizers)), fontsize=15, frameon=True)
 
     plt.tight_layout(rect=[0, 0.10, 1, 1])
@@ -1551,6 +1553,7 @@ def plot_predicted_loss_over_flops(
                     predictor_type=predictor_type,
                     target_flop=target_flop,
                     rows=rows[:n_trials],
+                    best_loss_guess=_get_best_loss_guess(benchmark_name)
                 )
                 pred_means.append(float(predicted_loss))
             except Exception:
@@ -1659,7 +1662,7 @@ def plot_predicted_loss_over_flops(
         ax.set_xlim(left, right)
 
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08),
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.2),
                ncol=min(4, len(optimizers)), fontsize=15, frameon=True)
 
     plt.tight_layout(rect=[0, 0.10, 1, 1])
@@ -1726,6 +1729,7 @@ def plot_predictor_optimizer_summary_table(
                         predictor_type=p_type,
                         target_flop=target_flop,
                         rows=source,
+                        best_loss_guess=_get_best_loss_guess(opt_name)
                     )
                     row_values.append(_format_hp_table_value(pred_n))
                 except Exception:
@@ -1847,6 +1851,7 @@ def plot_loss_predictor_comparison_for_optimizer(
                     predictor_type=p_type,
                     target_flop=target_flop,
                     rows=rows[:n],
+                    best_loss_guess=_get_best_loss_guess(benchmark_name),
                 )
                 pred_values.append(float(pred_loss))
             except Exception:
@@ -1976,6 +1981,7 @@ def plot_predictor_comparison_for_optimizer(
                     predictor_type=p_type,
                     target_flop=target_flop,
                     rows=source,
+                    best_loss_guess=_get_best_loss_guess(benchmark_name)
                 )
                 pred_values.append(float(pred_n))
             except Exception:
@@ -2170,6 +2176,7 @@ def plot_predicted_n_param_over_flops(
                     predictor_type=predictor_type,
                     target_flop=target_flop,
                     rows=source_rows[:n_trials],
+                    best_loss_guess=_get_best_loss_guess(benchmark_name)
                 )
                 pred_n_params.append(float(pred_n_param))
             except Exception:
@@ -2309,7 +2316,6 @@ def _extract_true_pareto_config_row(
     cfg: dict[str, Any] = {}
     maybe_cfgs = true_pareto_info.get("configs", [])
     if isinstance(maybe_cfgs, list) and idx < len(maybe_cfgs) and isinstance(maybe_cfgs[idx], dict):
-        print(f"maybe_cfgs: {maybe_cfgs}")
         cfg = {
             (k[len("config."):] if isinstance(k, str) and k.startswith("config.") else k): v
             for k, v in dict(maybe_cfgs[idx]).items()
@@ -2746,181 +2752,12 @@ def plot_hypervolume_over_flops(
     
     # Place legend below with reduced padding
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), 
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.2), 
                ncol=min(4, len(optimizers)), fontsize=15, frameon=True)
     
     plt.tight_layout(rect=[0, 0.10, 1, 1])
     
     return fig, ax
-
-
-# def plot_relative_ranking_over_flops(
-#     *,
-#     base_path: str | Path,
-#     optimizers: dict[str, list[int]] | dict[str, list[int | str]],
-#     key_to_extract: str | None = None,
-#     loss_key: str = "objective_to_minimize",
-#     log_scale: bool = False,
-#     figsize: tuple[int, int] = (10, 6),
-#     title: str = "Optimizer Rankings Over Optimization",
-#     flop_range: tuple[float, float] | None = None,
-#     return_split: bool = True,
-#     ranking_metric: str = "incumbent",
-# ) -> Any:
-#     """
-#     Plot optimizer rankings (calculated per-seed, then aggregated with mean/std).
-    
-#     Args:
-#         base_path: Base path where optimizer directories are located
-#         optimizers: Dict mapping optimizer name to list of seeds
-#         key_to_extract: Key to extract from results as cost
-#         log_scale: Whether to use log scale for x-axis
-#         figsize: Figure size
-#         title: Plot title
-#         flop_range: Tuple (min_flops, max_flops) to display on x-axis (trims data outside this range)
-    
-#     Returns:
-#         fig: Matplotlib figure
-#         ax: Axes object
-#     """
-#     if return_split:
-#         all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
-
-#         fig_all, ax_all = cast(tuple[Any, Any], plot_relative_ranking_over_flops(
-#             base_path=base_path,
-#             optimizers=all_opts,
-#             key_to_extract=key_to_extract,
-#             loss_key=loss_key,
-#             log_scale=log_scale,
-#             figsize=figsize,
-#             title=title,
-#             flop_range=flop_range,
-#             return_split=False,
-#             ranking_metric=ranking_metric,
-#         ))
-
-#         if with_priors:
-#             fig_with, ax_with = cast(tuple[Any, Any], plot_relative_ranking_over_flops(
-#                 base_path=base_path,
-#                 optimizers=with_priors,
-#                 key_to_extract=key_to_extract,
-#                 loss_key=loss_key,
-#                 log_scale=log_scale,
-#                 figsize=figsize,
-#                 title=f"{title} (with priors)",
-#                 flop_range=flop_range,
-#                 return_split=False,
-#                 ranking_metric=ranking_metric,
-#             ))
-#         else:
-#             fig_with, ax_with = _placeholder_plot(
-#                 figsize=figsize,
-#                 title=f"{title} (with priors)",
-#                 xlabel="FLOPs (log scale)",
-#                 ylabel="Relative Rank",
-#             )
-
-#         if without_priors:
-#             fig_without, ax_without = cast(tuple[Any, Any], plot_relative_ranking_over_flops(
-#                 base_path=base_path,
-#                 optimizers=without_priors,
-#                 key_to_extract=key_to_extract,
-#                 loss_key=loss_key,
-#                 log_scale=log_scale,
-#                 figsize=figsize,
-#                 title=f"{title} (without priors)",
-#                 flop_range=flop_range,
-#                 return_split=False,
-#                 ranking_metric=ranking_metric,
-#             ))
-#         else:
-#             fig_without, ax_without = _placeholder_plot(
-#                 figsize=figsize,
-#                 title=f"{title} (without priors)",
-#                 xlabel="FLOPs (log scale)",
-#                 ylabel="Relative Rank",
-#             )
-
-#         return (fig_all, ax_all), (fig_with, ax_with), (fig_without, ax_without)
-
-#     fig, ax = plt.subplots(figsize=figsize)
-    
-#     rankings = calculate_rankings(
-#         base_path=base_path,
-#         optimizers=optimizers,
-#         key_to_extract=key_to_extract,
-#         loss_key=loss_key,
-#         log_scale=log_scale,
-#         ranking_metric=ranking_metric,
-#     )
-    
-#     # Extract min_flops from flop_range if provided
-#     min_flops_start = flop_range[0] if flop_range is not None else 0
-    
-#     for opt_name, rank_data in rankings.items():
-#         color = get_optimizer_color(opt_name)
-#         linestyle = get_optimizer_linestyle(opt_name)
-#         flop_counts = rank_data["flop_counts"]
-#         mean_ranks = rank_data["mean_ranks"]
-#         std_ranks = rank_data["std_ranks"]
-        
-#         # Trim data to flop_range if specified
-#         if flop_range is not None:
-#             min_flops, max_flops = flop_range
-#             mask = (flop_counts >= min_flops) & (flop_counts <= max_flops)
-#             flop_counts = flop_counts[mask]
-#             mean_ranks = mean_ranks[mask]
-#             std_ranks = std_ranks[mask]
-        
-#         # Prepend a point at min_flops_start if the data starts after it
-#         if len(flop_counts) > 0 and flop_counts[0] > min_flops_start + 1e-8:
-#             flop_counts = np.concatenate([[min_flops_start], flop_counts])
-#             mean_ranks = np.concatenate([[mean_ranks[0]], mean_ranks])
-#             std_ranks = np.concatenate([[std_ranks[0]], std_ranks])
-        
-#         if len(flop_counts) > 0:
-#             # Plot mean ranking
-#             ax.plot(
-#                 flop_counts,
-#                 mean_ranks,
-#                 label=opt_name,
-#                 color=color,
-#                 linestyle=linestyle,
-#                 linewidth=2.5,
-#             )
-            
-#             # Add std band
-#             ax.fill_between(
-#                 flop_counts,
-#                 mean_ranks - std_ranks,
-#                 mean_ranks + std_ranks,
-#                 alpha=0.2,
-#                 color=color,
-#             )
-    
-#     ax.set_xlabel("FLOPs (log scale)", fontsize=15)
-#     ax.set_ylabel("Relative Rank", fontsize=15)
-#     ax.set_title(title, fontsize=14, fontweight="bold")
-#     ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
-#     ax.invert_yaxis()  # Invert so rank 1 is at top
-#     ax.set_xscale("log")
-    
-#     # Set y-axis to linear scale with rank labels
-#     num_optimizers = len(optimizers)
-#     ax.set_xlim(flop_range[0], flop_range[1])
-#     ax.set_ylim(num_optimizers + 0.5, 0.5)
-#     ax.set_yticks(range(1, num_optimizers + 1))
-#     ax.set_yticklabels(range(1, num_optimizers + 1))
-    
-#     # Place legend below with reduced padding
-#     handles, labels = ax.get_legend_handles_labels()
-#     fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), 
-#                ncol=min(4, len(optimizers)), fontsize=15, frameon=True)
-    
-#     plt.tight_layout(rect=[0, 0.10, 1, 1])
-    
-#     return fig, ax
-
 
 def plot_normalized_relative_ranking_over_flops(
     *,
@@ -3051,7 +2888,7 @@ def plot_normalized_relative_ranking_over_flops(
     ax.set_yticklabels(range(1, num_optimizers + 1))
     
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), 
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.2), 
                ncol=min(4, len(optimizers)), fontsize=15, frameon=True)
     
     plt.tight_layout(rect=[0, 0.10, 1, 1])
@@ -3235,7 +3072,7 @@ def plot_optimizer_rankings_across_benchmarks(
     
     # Place legend below with reduced padding
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), 
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.2), 
                ncol=min(4, len(optimizers)), fontsize=15, frameon=True)
     
     plt.tight_layout(rect=[0, 0.10, 1, 1])
@@ -3430,7 +3267,7 @@ def plot_loss_composite_across_benchmarks(
     
     # Add single shared legend at bottom
     if shared_handles and shared_labels:
-        fig.legend(shared_handles, shared_labels, loc='lower center', bbox_to_anchor=(0.5, -0.08),
+        fig.legend(shared_handles, shared_labels, loc='lower center', bbox_to_anchor=(0.5, -0.2),
                   ncol=min(4, len(optimizers)), fontsize=15, frameon=True)
     
     plt.tight_layout(rect=[0, 0.05, 1, 1])
@@ -4217,7 +4054,7 @@ def plot_hypervolume_composite_across_benchmarks(
     
     # Add single shared legend at bottom
     if shared_handles and shared_labels:
-        fig.legend(shared_handles, shared_labels, loc='lower center', bbox_to_anchor=(0.5, -0.08),
+        fig.legend(shared_handles, shared_labels, loc='lower center', bbox_to_anchor=(0.5, -0.2),
                   ncol=min(4, len(optimizers)), fontsize=15, frameon=True)
     
     plt.tight_layout(rect=[0, 0.05, 1, 1])
@@ -4244,11 +4081,11 @@ if __name__ == "__main__":
     # all_seeds = [40]
     optimizers_dict = {
         "random_search": all_seeds,
-        # "random_search_with_priors": all_seeds,
+        "random_search_with_priors": all_seeds,
         "chinchilla_approach1": all_seeds,
-        # "chinchilla_approach1_with_priors": all_seeds,
+        "chinchilla_approach1_with_priors": all_seeds,
         "chinchilla_approach2": all_seeds,
-        # "chinchilla_approach2_with_priors": all_seeds,
+        "chinchilla_approach2_with_priors": all_seeds,
         # "chinchilla_gemstones": all_seeds,
         "carbs": all_seeds,
         # "carbs_with_priors": all_seeds,
@@ -4258,6 +4095,7 @@ if __name__ == "__main__":
     from src.benchmarks.configs import BenchmarkEnum
     from src.benchmarks.llm_space import LLM_TARGETS
     from src.benchmarks.openclip_space import OPENCLIP_TARGETS
+    from src.benchmarks.tabpfn_space import TABPFN_TARGETS
     from src.plotting.plot_styles import BENCHMARK_TITLES
     from src.extrapolate import load_or_generate_pareto_info
     from src.loss_predictor import LossPredictorTypes
@@ -4265,19 +4103,22 @@ if __name__ == "__main__":
     from src.benchmarks.configs import get_benchmark
     
     benchmarks = [
-        BenchmarkEnum.OPENCLIP.value, 
-        BenchmarkEnum.LLM.value
+        # BenchmarkEnum.OPENCLIP.value, 
+        # BenchmarkEnum.LLM.value,
+        BenchmarkEnum.TABPFN.value,
     ]
 
     acc_flop_ranges_per_benchmark = {
-        BenchmarkEnum.OPENCLIP.value: (5e16, get_benchmark(BenchmarkEnum.OPENCLIP.value, False).max_evaluation_flops * 0.9 * 1e9),  # Convert to actual FLOPs for OpenCLIP
-        BenchmarkEnum.LLM.value: (9.99e18, get_benchmark(BenchmarkEnum.LLM.value, False).max_evaluation_flops * 0.9),
+        BenchmarkEnum.OPENCLIP.value: (3e16, get_benchmark(BenchmarkEnum.OPENCLIP.value, False).max_evaluation_flops * 0.9 * 1e9),  # Convert to actual FLOPs for OpenCLIP
+        BenchmarkEnum.LLM.value: (5e18, get_benchmark(BenchmarkEnum.LLM.value, False).max_evaluation_flops * 0.9),
+        BenchmarkEnum.TABPFN.value: (1e14, get_benchmark(BenchmarkEnum.TABPFN.value, False).max_evaluation_flops * 0.9),
     }
     
 
     acc_pred_flop_ranges_per_benchmark = {
-        BenchmarkEnum.OPENCLIP.value: (3e17, get_benchmark(BenchmarkEnum.OPENCLIP.value, False).max_evaluation_flops * 0.9 * 1e9),  # Convert to actual FLOPs for OpenCLIP
-        BenchmarkEnum.LLM.value: (2e19, get_benchmark(BenchmarkEnum.LLM.value, False).max_evaluation_flops * 0.9),
+        BenchmarkEnum.OPENCLIP.value: (3e16, get_benchmark(BenchmarkEnum.OPENCLIP.value, False).max_evaluation_flops * 0.9 * 1e9),  # Convert to actual FLOPs for OpenCLIP
+        BenchmarkEnum.LLM.value: (5e18, get_benchmark(BenchmarkEnum.LLM.value, False).max_evaluation_flops * 0.9),
+        BenchmarkEnum.TABPFN.value: (1e14, get_benchmark(BenchmarkEnum.TABPFN.value, False).max_evaluation_flops * 0.9),
     }
 
     # pareto_flop_range_per_benchmark = {
@@ -4300,23 +4141,34 @@ if __name__ == "__main__":
             get_benchmark(BenchmarkEnum.LLM.value, False).min_flops,
             get_benchmark(BenchmarkEnum.LLM.value, False).max_flops,
         ),
+        BenchmarkEnum.TABPFN.value: (
+            get_benchmark(BenchmarkEnum.TABPFN.value, False).min_flops,
+            get_benchmark(BenchmarkEnum.TABPFN.value, False).max_flops,
+        ),
     }
 
     target_flop_per_benchmark = {
         BenchmarkEnum.OPENCLIP.value: get_benchmark(BenchmarkEnum.OPENCLIP.value, False).max_flops * 0.9 * 1e9,
         BenchmarkEnum.LLM.value: get_benchmark(BenchmarkEnum.LLM.value, False).max_flops * 0.9,
+        BenchmarkEnum.TABPFN.value: get_benchmark(BenchmarkEnum.TABPFN.value, False).max_flops * 0.9,
     }
     true_pareto_info_per_benchmark = {
         BenchmarkEnum.OPENCLIP.value: load_or_generate_pareto_info(BenchmarkEnum.OPENCLIP.value),
-        BenchmarkEnum.LLM.value: load_or_generate_pareto_info(BenchmarkEnum.LLM.value)
+        BenchmarkEnum.LLM.value: load_or_generate_pareto_info(BenchmarkEnum.LLM.value),
+        BenchmarkEnum.TABPFN.value: load_or_generate_pareto_info(BenchmarkEnum.TABPFN.value),
     }
 
     for benchmark_name in benchmarks:
+        # continue
         print(f"\n{'='*60}")
         print(f"Generating plots for: {benchmark_name}")
         print(f"{'='*60}")
         # true_pareto_info = load_or_generate_pareto_info(benchmark_name)
-        targets = {BenchmarkEnum.LLM.value: LLM_TARGETS, BenchmarkEnum.OPENCLIP.value: OPENCLIP_TARGETS}
+        targets = {
+            BenchmarkEnum.LLM.value: LLM_TARGETS, 
+            BenchmarkEnum.OPENCLIP.value: OPENCLIP_TARGETS,
+            BenchmarkEnum.TABPFN.value: TABPFN_TARGETS,
+        }
         for target in targets[benchmark_name]:
             try:
                 target = target.value
@@ -4327,116 +4179,115 @@ if __name__ == "__main__":
             plot_output_dir = results_dir / benchmark_name / "plots" / target
             plot_output_dir.mkdir(parents=True, exist_ok=True)
             
-            
             benchmark_cfg = get_benchmark(benchmark_name, False)
             # flop_range = (5e16 if benchmark_name == BenchmarkEnum.OPENCLIP.value else 9.99e18, get_benchmark(benchmark_name, False).max_evaluation_flops * 0.9 * (1e9 if benchmark_name == BenchmarkEnum.OPENCLIP.value else 1))
             
            
-            # print(f"  Plotting pareto front loss...")
+            print(f"  Plotting pareto front loss...")
             # (fig_pareto_all, _), (fig_pareto_with, _), (fig_pareto_without, _) = plot_pareto_front_over_flops(
-            # (fig_pareto_all, _) = plot_pareto_front_over_flops(
-            #     base_path=results_dir / benchmark_name,
-            #     optimizers={k: [40] for k in optimizers_dict.keys()},
-            #     key_to_extract="cost",
-            #     log_scale=False,
-            #     loss_key=loss_key,
-            #     title=f"{BENCHMARK_TITLES[benchmark_name]}",
-            #     flop_range=flop_range_to_show_in_pareto_per_benchmark[benchmark_name],
-            #     # pareto_acc_flop_ranges=acc_flop_ranges_per_benchmark[benchmark_name],
-            #     true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-            #     # pareto_target_flop=target_flop_per_benchmark[benchmark_name],
-            #     return_split=False,
-            # )
-            # fig_pareto_all.savefig(plot_output_dir / "pareto_front_all.png", dpi=300, bbox_inches="tight")
-            # # fig_pareto_with.savefig(plot_output_dir / "pareto_front_with_priors.png", dpi=300, bbox_inches="tight")
-            # # fig_pareto_without.savefig(plot_output_dir / "pareto_front_without_priors.png", dpi=300, bbox_inches="tight")
-            # plt.close(fig_pareto_all)
-            # # plt.close(fig_pareto_with)
-            # # plt.close(fig_pareto_without)
-            # print(f"    ✓ Saved: {plot_output_dir / 'pareto_front_all.png'}")
-            # # print(f"    ✓ Saved: {plot_output_dir / 'pareto_front_with_priors.png'}")
-            # # print(f"    ✓ Saved: {plot_output_dir / 'pareto_front_without_priors.png'}")
-
-            # prediction_flop_range = (7e17 if benchmark_name == BenchmarkEnum.OPENCLIP.value else 5e19, get_benchmark(benchmark_name, False).max_evaluation_flops * 0.9 * (1e9 if benchmark_name == BenchmarkEnum.OPENCLIP.value else 1))
+            (fig_pareto_all, _) = plot_pareto_front_over_flops(
+                base_path=results_dir / benchmark_name,
+                optimizers={k: [40] for k in optimizers_dict.keys()},
+                key_to_extract="cost",
+                log_scale=False,
+                loss_key=loss_key,
+                title=f"{BENCHMARK_TITLES[benchmark_name]}",
+                flop_range=flop_range_to_show_in_pareto_per_benchmark[benchmark_name],
+                # pareto_acc_flop_ranges=acc_flop_ranges_per_benchmark[benchmark_name],
+                true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                # pareto_target_flop=target_flop_per_benchmark[benchmark_name],
+                return_split=False,
+            )
+            fig_pareto_all.savefig(plot_output_dir / "pareto_front_all.png", dpi=300, bbox_inches="tight")
+            # fig_pareto_with.savefig(plot_output_dir / "pareto_front_with_priors.png", dpi=300, bbox_inches="tight")
+            # fig_pareto_without.savefig(plot_output_dir / "pareto_front_without_priors.png", dpi=300, bbox_inches="tight")
+            plt.close(fig_pareto_all)
+            # plt.close(fig_pareto_with)
+            # plt.close(fig_pareto_without)
+            print(f"    ✓ Saved: {plot_output_dir / 'pareto_front_all.png'}")
+            # print(f"    ✓ Saved: {plot_output_dir / 'pareto_front_with_priors.png'}")
+            # print(f"    ✓ Saved: {plot_output_dir / 'pareto_front_without_priors.png'}")
+            # raise Exception("Not Ready yet")
             
-            # for predictor_type in LossPredictorTypes:
-            #     predictor_slug = predictor_type.value.lower().replace(" ", "_")
-            #     print(f"  Plotting {predictor_type.value} predicted loss at FLOP: {target_flop_per_benchmark[benchmark_name]:.2e} over cumulative FLOPs...")
-            #     # (fig_pred_all, _), (fig_pred_with, _), (fig_pred_without, _) = plot_predicted_loss_over_flops(
-            #     (fig_pred_all, _)= plot_predicted_loss_over_flops(
-            #         base_path=results_dir / benchmark_name,
-            #         optimizers={k: [40] for k in optimizers_dict.keys()},
-            #         target_flop=target_flop_per_benchmark[benchmark_name],
-            #         predictor_type=predictor_type,
-            #         key_to_extract="cost",
-            #         loss_key=loss_key,
-            #         title=f"{BENCHMARK_TITLES[benchmark_name]} ({predictor_type.value})",
-            #         flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
-            #         true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-            #         return_split=False,
-            #         normalized_flops=False,
-            #     )
-            #     fig_pred_all.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_all.png", dpi=300, bbox_inches="tight")
-            #     # fig_pred_with.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_with_priors.png", dpi=300, bbox_inches="tight")
-            #     # fig_pred_without.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_without_priors.png", dpi=300, bbox_inches="tight")
-            #     plt.close(fig_pred_all)
-            #     # plt.close(fig_pred_with)
-            #     # plt.close(fig_pred_without)
-            #     print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_all.png'}")
-            #     print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_with_priors.png'}")
-            #     print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_without_priors.png'}")
+            for predictor_type in LossPredictorTypes:
+                predictor_slug = predictor_type.value.lower().replace(" ", "_")
+                print(f"  Plotting {predictor_type.value} predicted loss at FLOP: {target_flop_per_benchmark[benchmark_name]:.2e} over cumulative FLOPs...")
+                # (fig_pred_all, _), (fig_pred_with, _), (fig_pred_without, _) = plot_predicted_loss_over_flops(
+                (fig_pred_all, _)= plot_predicted_loss_over_flops(
+                    base_path=results_dir / benchmark_name,
+                    optimizers={k: [40] for k in optimizers_dict.keys()},
+                    target_flop=target_flop_per_benchmark[benchmark_name],
+                    predictor_type=predictor_type,
+                    key_to_extract="cost",
+                    loss_key=loss_key,
+                    title=f"{BENCHMARK_TITLES[benchmark_name]} ({predictor_type.value})",
+                    flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
+                    true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                    return_split=False,
+                    normalized_flops=False,
+                )
+                fig_pred_all.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_all.png", dpi=300, bbox_inches="tight")
+                # fig_pred_with.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_with_priors.png", dpi=300, bbox_inches="tight")
+                # fig_pred_without.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_without_priors.png", dpi=300, bbox_inches="tight")
+                plt.close(fig_pred_all)
+                # plt.close(fig_pred_with)
+                # plt.close(fig_pred_without)
+                print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_all.png'}")
+                print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_with_priors.png'}")
+                print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_without_priors.png'}")
+
             target_flop = target_flop_per_benchmark[benchmark_name]
-            # for predictor_type in [ScaleParamPredictorTypes.CHINCHILLA3, ScaleParamPredictorTypes.POWER_LAW_FIT]:
-            #     predictor_slug = predictor_type.value.lower().replace(" ", "_")
-            #     print(f"  Plotting {predictor_type.value} predicted n_param at FLOP: {target_flop_per_benchmark[benchmark_name]:.2e} over cumulative FLOPs...")
-            #     (fig_nparam_all, _) = plot_predicted_n_param_over_flops(
-            #         base_path=results_dir / benchmark_name,
-            #         optimizers={k: [40] for k in optimizers_dict.keys()},
-            #         target_flop=target_flop,
-            #         predictor_type=predictor_type,
-            #         key_to_extract="cost",
-            #         loss_key=loss_key,
-            #         title=f"{BENCHMARK_TITLES[benchmark_name]} ({predictor_type.value})",
-            #         flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
-            #         true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-            #         return_split=False,
-            #     )
-            #     fig_nparam_all.savefig(plot_output_dir / f"{predictor_slug}_predicted_n_param_all_{target_flop:.2e}.png", dpi=300, bbox_inches="tight")
-            #     # fig_nparam_with.savefig(plot_output_dir / f"{predictor_slug}_predicted_n_param_with_priors_{target_flop:.2e}.png", dpi=300, bbox_inches="tight")
-            #     # fig_nparam_without.savefig(plot_output_dir / f"{predictor_slug}_predicted_n_param_without_priors_{target_flop:.2e}.png", dpi=300, bbox_inches="tight")
-            #     plt.close(fig_nparam_all)
-            #     # plt.close(fig_nparam_with)
-            #     # plt.close(fig_nparam_without)
-            #     print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_n_param_all_{target_flop:.2e}.png'}")
-            #     # print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_n_param_with_priors_{target_flop:.2e}.png'}")
-            #     # print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_n_param_without_priors_{target_flop:.2e}.png'}")
+            for predictor_type in [ScaleParamPredictorTypes.CHINCHILLA3, ScaleParamPredictorTypes.POWER_LAW_FIT]:
+                predictor_slug = predictor_type.value.lower().replace(" ", "_")
+                print(f"  Plotting {predictor_type.value} predicted n_param at FLOP: {target_flop_per_benchmark[benchmark_name]:.2e} over cumulative FLOPs...")
+                (fig_nparam_all, _) = plot_predicted_n_param_over_flops(
+                    base_path=results_dir / benchmark_name,
+                    optimizers={k: [40] for k in optimizers_dict.keys()},
+                    target_flop=target_flop,
+                    predictor_type=predictor_type,
+                    key_to_extract="cost",
+                    loss_key=loss_key,
+                    title=f"{BENCHMARK_TITLES[benchmark_name]} ({predictor_type.value})",
+                    flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
+                    true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                    return_split=False,
+                )
+                fig_nparam_all.savefig(plot_output_dir / f"{predictor_slug}_predicted_n_param_all_{target_flop:.2e}.png", dpi=300, bbox_inches="tight")
+                # fig_nparam_with.savefig(plot_output_dir / f"{predictor_slug}_predicted_n_param_with_priors_{target_flop:.2e}.png", dpi=300, bbox_inches="tight")
+                # fig_nparam_without.savefig(plot_output_dir / f"{predictor_slug}_predicted_n_param_without_priors_{target_flop:.2e}.png", dpi=300, bbox_inches="tight")
+                plt.close(fig_nparam_all)
+                # plt.close(fig_nparam_with)
+                # plt.close(fig_nparam_without)
+                print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_n_param_all_{target_flop:.2e}.png'}")
+                # print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_n_param_with_priors_{target_flop:.2e}.png'}")
+                # print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_n_param_without_priors_{target_flop:.2e}.png'}")
             model_size_predictors_to_compare = [
                 ScaleParamPredictorTypes.CHINCHILLA3, 
                 ScaleParamPredictorTypes.POWER_LAW_FIT
             ]
-            # target_flop = target_flop_per_benchmark[benchmark_name]
+            target_flop = target_flop_per_benchmark[benchmark_name]
 
-            # loss_predictors_to_compare = list(LossPredictorTypes)
+            loss_predictors_to_compare = list(LossPredictorTypes)
 
-            # fig_loss_comp, _ = plot_loss_predictor_comparison_for_optimizer(
-            #     base_path=results_dir / benchmark_name,
-            #     optimizer_name="random_search",
-            #     seed=40,
-            #     target_flop=target_flop,
-            #     predictor_types=loss_predictors_to_compare,
-            #     key_to_extract="cost",
-            #     loss_key=loss_key,
-            #     flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
-            #     true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-            #     title=f"Loss Predictor Comparison (RS) - {BENCHMARK_TITLES[benchmark_name]}",
-            # )
+            fig_loss_comp, _ = plot_loss_predictor_comparison_for_optimizer(
+                base_path=results_dir / benchmark_name,
+                optimizer_name="random_search",
+                seed=40,
+                target_flop=target_flop,
+                predictor_types=loss_predictors_to_compare,
+                key_to_extract="cost",
+                loss_key=loss_key,
+                flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
+                true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                title=f"Loss Predictor Comparison (RS) - {BENCHMARK_TITLES[benchmark_name]}",
+            )
 
-            # loss_comp_filename = f"loss_predictor_comparison_rs_{target_flop:.2e}.png"
-            # fig_loss_comp.savefig(plot_output_dir / loss_comp_filename, dpi=300, bbox_inches="tight")
-            # plt.close(fig_loss_comp)
-            # print(f"    ✓ Saved: {plot_output_dir / loss_comp_filename}")
+            loss_comp_filename = f"loss_predictor_comparison_rs_{target_flop:.2e}.png"
+            fig_loss_comp.savefig(plot_output_dir / loss_comp_filename, dpi=300, bbox_inches="tight")
+            plt.close(fig_loss_comp)
+            print(f"    ✓ Saved: {plot_output_dir / loss_comp_filename}")
 
-            # print(f"  Plotting Predictor Comparison for Random Search...")
+            print(f"  Plotting Predictor Comparison for Random Search...")
             fig_comp, _ = plot_predictor_comparison_for_optimizer(
                 base_path=results_dir / benchmark_name,
                 optimizer_name="random_search",
@@ -4455,27 +4306,29 @@ if __name__ == "__main__":
             plt.close(fig_comp)
             print(f"    ✓ Saved: {plot_output_dir / comp_filename}")
 
-            # report_budget = prediction_flop_range[1] 
+            report_budget = acc_pred_flop_ranges_per_benchmark[benchmark_name][1] 
 
-            # print(f"  Generating summary table for all predictors/optimizers at budget {report_budget:.2e}...")
+            print(f"  Generating summary table for all predictors/optimizers at budget {report_budget:.2e}...")
 
-            # fig_table, _ = plot_predictor_optimizer_summary_table(
-            #     base_path=results_dir / benchmark_name,
-            #     optimizers=optimizers_dict,
-            #     target_flop=target_flop,
-            #     predictor_types=model_size_predictors_to_compare,
-            #     evaluation_limit=report_budget,
-            #     key_to_extract="cost",
-            #     loss_key=loss_key,
-            #     title=f"n_param Predictions: {BENCHMARK_TITLES[benchmark_name]}",
-            #     true_pareto_info=true_pareto_info,
-            # )
+            fig_table, _ = plot_predictor_optimizer_summary_table(
+                base_path=results_dir / benchmark_name,
+                optimizers=optimizers_dict,
+                target_flop=target_flop,
+                predictor_types=model_size_predictors_to_compare,
+                evaluation_limit=report_budget,
+                key_to_extract="cost",
+                loss_key=loss_key,
+                title=f"n_param Predictions: {BENCHMARK_TITLES[benchmark_name]}",
+                true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+            )
 
-            # table_path = plot_output_dir / f"predictor_summary_table_{target_flop:.2e}.png"
-            # fig_table.savefig(table_path, dpi=300, bbox_inches="tight")
-            # plt.close(fig_table)
+            table_path = plot_output_dir / f"predictor_summary_table_{target_flop:.2e}.png"
+            fig_table.savefig(table_path, dpi=300, bbox_inches="tight")
+            plt.close(fig_table)
 
-            # print(f"    ✓ Saved Summary Table: {table_path}")
+            print(f"    ✓ Saved Summary Table: {table_path}")
+
+
 
             from src.hp_predictor import HPPredictorTypes
 
@@ -4502,8 +4355,14 @@ if __name__ == "__main__":
     plots_dir = results_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    # print(f"\n{'='*60}")
-    # print("Generating the predicted loss across all benchmarks...")
+    benchmarks = [
+        BenchmarkEnum.OPENCLIP.value, 
+        BenchmarkEnum.LLM.value,
+        BenchmarkEnum.TABPFN.value,
+    ]
+
+    print(f"\n{'='*60}")
+    print("Generating the predicted loss across all benchmarks...")
     (pred_loss_comp_all, _)= plot_predicted_loss_composite_across_benchmarks(
             base_path=results_dir,
             benchmarks=benchmarks,
@@ -4523,25 +4382,26 @@ if __name__ == "__main__":
     plt.close(pred_loss_comp_all)
     print(f"✓ Saved: {plots_dir / 'pred_loss_comp_all.png'}")
 
-    # (pred_n_param_comp_all, _)= plot_predicted_n_param_composite_across_benchmarks(
-    #         base_path=results_dir,
-    #         benchmarks=benchmarks,
-    #         optimizers=optimizers_dict,
-    #         # target_flop=target_flop_per_benchmark,
-    #         predictor_type=ScaleParamPredictorTypes.CHINCHILLA3,
-    #         key_to_extract="cost",
-    #         loss_key="objective_to_minimize",
-    #         # figsize=figsize,
-    #         # title=title,
-    #         target_flop_per_benchmark=target_flop_per_benchmark,
-    #         flop_ranges_per_benchmark=acc_pred_flop_ranges_per_benchmark,
-    #         true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
-    #         return_split=False,
-    #     )
-    # pred_n_param_comp_all.savefig(plots_dir / "pred_n_param_comp_all.png", dpi=300, bbox_inches="tight")
-    # plt.close(pred_n_param_comp_all)
-    # print(f"✓ Saved: {plots_dir / 'pred_n_param_comp_all.png'}")
-    # raise Exception("Not ready")
+
+    (pred_n_param_comp_all, _)= plot_predicted_n_param_composite_across_benchmarks(
+            base_path=results_dir,
+            benchmarks=benchmarks,
+            optimizers=optimizers_dict,
+            # target_flop=target_flop_per_benchmark,
+            predictor_type=ScaleParamPredictorTypes.CHINCHILLA3,
+            key_to_extract="cost",
+            loss_key="objective_to_minimize",
+            # figsize=figsize,
+            # title=title,
+            target_flop_per_benchmark=target_flop_per_benchmark,
+            flop_ranges_per_benchmark=acc_pred_flop_ranges_per_benchmark,
+            true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
+            return_split=False,
+        )
+    pred_n_param_comp_all.savefig(plots_dir / "pred_n_param_comp_all.png", dpi=300, bbox_inches="tight")
+    plt.close(pred_n_param_comp_all)
+    print(f"✓ Saved: {plots_dir / 'pred_n_param_comp_all.png'}")
+    raise Exception("Not ready")
 
 
     print(f"\n{'='*60}")
@@ -4602,9 +4462,9 @@ if __name__ == "__main__":
         traceback.print_exc()
                 
     # Plot 4: Parallel coordinate plot showing rankings across all benchmarks
-    print(f"\n{'='*60}")
-    print("Generating parallel coordinate plot across all benchmarks...")
-    print(f"{'='*60}")
+    # print(f"\n{'='*60}")
+    # print("Generating parallel coordinate plot across all benchmarks...")
+    # print(f"{'='*60}")
     # for ranking_metric in ["incumbent", "hypervolume"]:
     #     print(f"\n  Plotting parallel coordinates for {ranking_metric} rankings...")
     #     try:

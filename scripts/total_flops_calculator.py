@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from src.benchmarks.configs import BenchmarkEnum, get_benchmark
 from src.benchmarks.llm_space import LLM_TARGETS
 from src.benchmarks.openclip_space import OPENCLIP_TARGETS
+from src.benchmarks.tabpfn_space import TABPFN_TARGETS
 
 def get_total_flops_for_seed(
     *,
@@ -61,19 +62,20 @@ if __name__ == "__main__":
     
     all_seeds = list(set(range(40, 51)))
     optimizers_dict = {
-        # "random_search": all_seeds,
-        # "random_search_with_priors": all_seeds,
+        "random_search": all_seeds,
+        "random_search_with_priors": all_seeds,
         "chinchilla_approach1": all_seeds,
         "chinchilla_approach1_with_priors": all_seeds,
-        # "chinchilla_approach2": all_seeds,
-        # "chinchilla_approach2_with_priors": all_seeds,
-        # "carbs": all_seeds,
-        # "carbs_with_priors": all_seeds,
+        "chinchilla_approach2": all_seeds,
+        "chinchilla_approach2_with_priors": all_seeds,
+        "carbs": all_seeds,
+        "carbs_with_priors": all_seeds,
     }
 
     benchmarks = [
         # BenchmarkEnum.OPENCLIP.value, 
-        BenchmarkEnum.LLM.value
+        # BenchmarkEnum.LLM.value,
+        BenchmarkEnum.TABPFN.value
         ]
     
     grand_total_flops = 0
@@ -88,7 +90,8 @@ if __name__ == "__main__":
         
         targets = {
             BenchmarkEnum.LLM.value: LLM_TARGETS,
-            BenchmarkEnum.OPENCLIP.value: OPENCLIP_TARGETS
+            BenchmarkEnum.OPENCLIP.value: OPENCLIP_TARGETS,
+            BenchmarkEnum.TABPFN.value: TABPFN_TARGETS,
         }
 
         for target in targets.get(benchmark_name, []):

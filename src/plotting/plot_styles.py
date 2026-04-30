@@ -57,4 +57,5 @@ OPTIMIZER_COLORS = {
 BENCHMARK_TITLES = {
     "openclip": "OpenCLIP",
     "llm": "LLM",
+    "tabpfn": "TabPFN",
 }

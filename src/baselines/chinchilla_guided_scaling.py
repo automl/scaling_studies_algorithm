@@ -1152,11 +1152,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         }
 
     @classmethod
-    def get_power_law_curvature(cls, N, D, L) -> ScalingLawParameters:
-        # N, D, L are np arrays of the same length, containing the number of parameters, number of datapoints, and observed loss for each trial.
-        # L = E + A / N^alpha + B / D^beta
-        # where A = e^a and B = e^b
-
+    def get_power_law_curvature(cls, N, D, L, best_loss_guess) -> ScalingLawParameters:
         def huber(residual, delta=1e-3):
             abs_r = np.abs(residual)
             return np.where(
@@ -1168,26 +1164,23 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         def objective(theta, N, D, L):
             E, a, b, alpha, beta = theta
             
-            # Clip a and b to prevent overflow (exp(20) ≈ 4.85e8)
-            a_clipped = np.clip(a, -10, 10)
-            b_clipped = np.clip(b, -10, 10)
+            # WIDENED clipping to allow negative exponents for values < 1.0
+            a_clipped = np.clip(a, -20, 20)
+            b_clipped = np.clip(b, -20, 20)
             A = np.exp(a_clipped)
             B = np.exp(b_clipped)
             
-            # Compute with numerical stability
             with np.errstate(divide='ignore', invalid='ignore'):
                 N_alpha = np.power(N, alpha, where=(N > 0), out=np.ones_like(N, dtype=np.float64))
                 D_beta = np.power(D, beta, where=(D > 0), out=np.ones_like(D, dtype=np.float64))
                 
-                # Avoid division by zero
                 N_alpha = np.where(N_alpha > 0, N_alpha, 1.0)
                 D_beta = np.where(D_beta > 0, D_beta, 1.0)
                 
                 L_hat = E + A / N_alpha + B / D_beta
             
-            # Check for NaN or Inf
             if np.any(~np.isfinite(L_hat)) or np.any(L_hat <= 0):
-                return 1e10  # Large penalty for invalid values
+                return 1e10  
             
             residual = np.log(L_hat) - np.log(L)
             loss = np.sum(huber(residual))
@@ -1197,31 +1190,29 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 
             return loss
 
-        # Adaptive initialization grid based on data size
-        # For small datasets, use fewer initializations
         num_points = len(L)
-        min_L = np.min(L)
+        min_L = best_loss_guess
+        
+        # FIXED: Initialize a and b closer to 0 or negative for normalized data
+        # exp(0) = 1.0, exp(-2) = 0.13. These are realistic scales for normalized A and B.
         if num_points <= 10:
             initialization = [
-                (min_L * 0.5, 6, 6, 0.5, 0.5),
-                (min_L * 0.9, 5, 5, 0.5, 0.5),
-                (min_L * 0.1, 7, 7, 0.5, 0.5),
-                # Add a few more safe ones
+                (min_L * 0.9, 0, 0, 0.5, 0.5),
+                (min_L * 0.8, -2, -2, 0.5, 0.5),
+                (min_L * 0.7, 2, 2, 0.5, 0.5),
             ]
         else:
             initialization = list(itertools.product(
-                [min_L * 0.1, min_L * 0.5],  # E (guess based on actual min loss)
-                [6, 10],                          # a
-                [60, 10],                          # b
-                [0.4, 0.5],                          # alpha
-                [0.4, 0.5],                          # beta
+                [min_L * 0.8, min_L * 0.9],  
+                [-2, 0, 2],         # a              
+                [-2, 0, 2],         # b              
+                [0.4, 0.5],         # alpha 
+                [0.4, 0.5],         # beta  
             ))
 
         best_result = None
         best_loss = float("inf")
-        absolute_stop_threshold = len(L) * 1e-4
-    
-        # 2. Patience Counter: How many initializations we check without beating our best score
+        
         patience_counter = 0
         patience_limit = 100
         N_scale = np.max(N)
@@ -1231,21 +1222,17 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         D_norm = D / D_scale
         
         for idx, theta0 in enumerate(initialization):
-            # if best_loss < absolute_stop_threshold:
-            #     logger.info(f"Early stopping at iteration {idx}: Reached target loss tolerance ({best_loss:.6f})")
-            #     break
-                
-            # Condition B: We found a good fit and haven't beaten it in 15 tries
             if idx > 20 and patience_counter >= patience_limit:
-                logger.info(f"Early stopping at iteration {idx}: No improvement in {patience_limit} tries. Best loss: {best_loss:.6f}")
                 break
+                
             try:
+                # FIXED: Allow a and b to be negative, up to -20 (A = 2e-9)
                 bounds = [
-                    (1e-5, np.min(L)), # E cannot be greater than the lowest observed loss
-                    (1e-5, 10),         # a
-                    (1e-5, 10),         # b
-                    (0.25, 0.75),        # alpha (widened slightly to let optimizer breathe)
-                    (0.25, 0.75),        # beta
+                    (min_L * 0.001, min_L), 
+                    (-20, 20),         # a
+                    (-20, 20),         # b
+                    (0.25, 0.75),      # alpha 
+                    (0.25, 0.75),      # beta
                 ]
                 
                 res = minimize(
@@ -1256,8 +1243,9 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                     bounds=bounds,
                 )
                 
-                # Keep track of the best global minimum
-                if res.success and res.fun < best_loss:
+                # FIXED: Removed the strict `res.success` check. 
+                # If SciPy throws a line search warning but finds a valid lower loss, keep it!
+                if np.isfinite(res.fun) and res.fun < best_loss:
                     best_loss = res.fun
                     best_result = res
                     patience_counter = 0
@@ -1266,16 +1254,21 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                     
             except Exception as e:
                 patience_counter += 1
-                continue # Don't crash the whole grid search if one init fails
+                continue 
 
         if best_result is None:
             raise ValueError("Could not fit scaling law with any initialization.")
 
         E, a, b, alpha, beta = best_result.x
-        A = np.exp(np.clip(a, 1e-5, 10))
-        B = np.exp(np.clip(b, 1e-5, 10))
+        
+        # Apply the same widened clipping before undoing the log
+        A = np.exp(np.clip(a, -20, 20))
+        B = np.exp(np.clip(b, -20, 20))
+        
+        # Correctly un-normalize A and B back to raw compute space
         A = A * (N_scale ** alpha)
         B = B * (D_scale ** beta)
+        
         print(f"Fitted scaling law parameters: E={E:.6f}, A={A:.6e}, B={B:.6e}, alpha={alpha:.4f}, beta={beta:.4f}")
         return ScalingLawParameters(E=E, A=A, B=B, alpha=alpha, beta=beta)
     

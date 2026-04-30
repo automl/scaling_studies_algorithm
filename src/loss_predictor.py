@@ -11,7 +11,6 @@ class LossPredictorTypes(Enum):
     KAPLAN = "Kaplan"
     CHINCHILLA3 = "Chinchilla Approach3"
 
-
 @dataclass
 class KaplanScalingLawInfo:
     slope: float
@@ -29,6 +28,7 @@ def predict_loss(
     target_flop: float,
     *,
     rows: list[tuple[float, float, float, float]],
+    best_loss_guess: float,
 ) -> tuple[float, KaplanScalingLawInfo | ScalingLawParameters]:
     """Predict loss for a single rows set and return the scalar prediction plus fit info."""
 
@@ -119,6 +119,7 @@ def predict_loss(
             N=n_params,
             D=n_tokens,
             L=losses,
+            best_loss_guess=best_loss_guess,
         )
 
         alpha = float(scaling_params.alpha)

@@ -51,16 +51,25 @@ def convert_space_to_carbs_space(space: dict[str, Any]):
     for attr_name, attr_value in space.items():
         if isinstance(attr_value, (neps.HPOInteger, neps.HPOFloat)):
             search_center = (attr_value.domain.lower + attr_value.domain.upper) / 2 if not attr_value.prior else attr_value.prior
-            # search_center = None
             if attr_value.log:
+                base = attr_value.log_base if attr_value.log_base is not None else 10
+                scale = math.log(math.e, base)
+                if attr_value.log_base is not None:
+                    exponent_lower = round(math.log(attr_value.domain.lower, attr_value.log_base))
+                    exponent_upper = round(math.log(attr_value.domain.upper, attr_value.log_base))
+                    exponent_center = round((exponent_lower + exponent_upper) / 2)
+                    search_center = base ** exponent_center
+                else:
+                    search_center = math.sqrt(attr_value.domain.lower * attr_value.domain.upper)
+
                 yield Param(
                     name=attr_name,
                     space=LogSpace(
-                        # scale=- 1/ math.log(attr_value.upper / attr_value.lower),
-                        scale=math.log(math.e, 10),
+                        scale=scale,
                         min=attr_value.domain.lower,
                         max=attr_value.domain.upper,
                         is_integer=isinstance(attr_value, (neps.HPOInteger)),
+                        base=base
                     ),
                     search_center=search_center,
                 )
@@ -79,7 +88,7 @@ def convert_space_to_carbs_space(space: dict[str, Any]):
                 yield Param(
                     name=attr_name,
                     space=LinearSpace(
-                        scale=3 * (attr_value.domain.upper - attr_value.domain.lower),
+                        scale= 3 * (attr_value.domain.upper - attr_value.domain.lower),
                         min=attr_value.domain.lower,
                         max=attr_value.domain.upper,
                         is_integer=isinstance(attr_value, (neps.HPOInteger)),
@@ -686,6 +695,7 @@ def get_carbs_optimizer(space: neps.SearchSpace, seed: int,
     )
     print("param_spaces: ", param_spaces)
     carbs_opt = CARBS(carbs_params, param_spaces)
+    print(carbs_opt._real_number_space_by_name)
     opt = custom(
         name="carbs", 
         optimizer=lambda pipeline_space: CARBSSuggester(
