@@ -58,7 +58,7 @@ def predict_loss(
         if not res:
             raise ValueError("Could not compute a Pareto front from the provided rows")
 
-        pareto_flops, pareto_losses = res
+        pareto_flops, pareto_losses, pareto_indices = res
         fit_result = fit_power_law(
             np.asarray(pareto_flops, dtype=float),
             np.asarray(pareto_losses, dtype=float),
@@ -115,10 +115,25 @@ def predict_loss(
         losses = losses_arr[mask]
         flops = flops_arr[mask]
 
+        res = ScalingLawGuidedOptimizer.compute_search_pareto_front(
+            losses.tolist(),
+            flops.tolist(),
+        )
+        if not res:
+            raise ValueError("Could not compute a Pareto front from the provided rows")
+
+        pareto_flops, pareto_losses, pareto_indices = res
+
+        # pareto_flops = flops[pareto_indices]
+        pareto_losses = losses[pareto_indices]
+        pareto_n_params = n_params[pareto_indices]
+        pareto_n_tokens = n_tokens[pareto_indices]
+        
+
         scaling_params = Chinchilla_Guided_Scaling.get_power_law_curvature(
-            N=n_params,
-            D=n_tokens,
-            L=losses,
+            N=pareto_n_params,
+            D=pareto_n_tokens,
+            L=pareto_losses,
             best_loss_guess=best_loss_guess,
         )
 

@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO)
 
 def load_or_generate_pareto_info(benchmark_name: str) -> dict[str, list]:
     comprehensive_study_root_dir = (
-        f"/work/dlclarge1/alipourn-benchmark_res/{benchmark_name}/"
+        f"/work/dlclarge1/alipourn-scan_suite/{benchmark_name}/"
         f"{OptimizerEnum.GRID_SEARCH}/seed_40"
     )
     summary_dir = Path(comprehensive_study_root_dir) / "summary"
@@ -34,9 +34,9 @@ def load_or_generate_pareto_info(benchmark_name: str) -> dict[str, list]:
     if pareto_info is None:
         pareto_info = get_true_pareto_front(comprehensive_study_root_dir)
         save_pareto_info(pareto_info, summary_dir)
-    if benchmark_name == "openclip":
-        # Convert flops to billions for consistency
-        pareto_info["flops"] = [f * 1e9 for f in pareto_info["flops"]]
+    # if benchmark_name == "openclip":
+    #     # Convert flops to billions for consistency
+    #     pareto_info["flops"] = [f * 1e9 for f in pareto_info["flops"]]
     return pareto_info
             
 
@@ -417,7 +417,7 @@ if __name__ == '__main__':
             torch.manual_seed(seed)
             optimizer_name = OptimizerEnum(optimizer)
             root_dir = (
-                f"/work/dlclarge1/alipourn-benchmark_res/{args.benchmark}/"
+                f"/work/dlclarge1/alipourn-scan_suite/{args.benchmark}/"
                 f"{optimizer_name}{optimizer_suffix}/seed_{seed}")
             optimizer_root_dir_for_seeds.append(root_dir)
             benchmark = get_benchmark(
@@ -447,7 +447,7 @@ if __name__ == '__main__':
             # Single seed extrapolation
             
             comprehensive_study_root_dir = (
-                f"/work/dlclarge1/alipourn-benchmark_res/{args.benchmark}/"
+                f"/work/dlclarge1/alipourn-scan_suite/{args.benchmark}/"
                 f"{OptimizerEnum.GRID_SEARCH}/seed_40"
             )
             summary_dir = Path(comprehensive_study_root_dir) / "summary"
@@ -608,7 +608,7 @@ if __name__ == '__main__':
     # Aggregated plots across multiple seeds
     # if len(optimizers) > 1:
     #     comprehensive_study_root_dir = (
-    #         f"/work/dlclarge1/alipourn-benchmark_res/{args.benchmark}/"
+    #         f"/work/dlclarge1/alipourn-scan_suite/{args.benchmark}/"
     #         f"{OptimizerEnum.GRID_SEARCH}/seed_40"
     #     )
     #     summary_dir = Path(comprehensive_study_root_dir) / "summary"

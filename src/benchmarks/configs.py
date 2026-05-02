@@ -32,10 +32,12 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool) -> BenchmarkCo
     match benchmark:
         case BenchmarkEnum.OPENCLIP: 
             bench = openclip.get_benchmark()
-            min_flops = 3.600000e+04
-            max_flops = 5.970000e+08
-            grid_diagonal = 9 + 9 # vision_width and text_width have 9 possible values each
-            total_eval_flops = max_flops * 6.52
+            # 1.029888e+08 parameters, 6.000000e+07 data points, total flops: 5.970154e+17
+            # 2.013121e+06 parameters, 6.000000e+05 data points, total flops: 3.605023e+13
+            # total flops 4.328393e+18
+            min_flops = 3.600000e+13
+            max_flops = 2.5e+17
+            total_eval_flops = max_flops * 10
             return BenchmarkConfig(
                 space= openclip.get_pipeline_space(),
                 params_estimator=openclip.parameters_estimator_wrapper(bench),
@@ -51,12 +53,11 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool) -> BenchmarkCo
             )
         case BenchmarkEnum.LLM:
             bench = llm.get_benchmark()
-            # (min_params, min_data, min_flops), (max_params, max_data, max_flops) = llm.get_macro_params_bounds(bench)
-            # print(f"Macro bounds - Params: ({min_params:e}, {max_params:e}), Data: ({min_data:e}, {max_data:e}), Flops: ({min_flops:e}, {max_flops:e})")
-            max_flops = 5.312364e+19
-            min_flops = 3.600000e+04
-            grid_diagonal = 14 + 21 # d_model + n_layers
-            total_eval_flops = max_flops * grid_diagonal * 0.5
+            # 4.401815e+08 parameters, 1.600000e+10 data points, total flops: 5.312364e+19
+            # 1.628109e+07 parameters, 2.000000e+08 data points, total flops: 2.456771e+16
+            min_flops = 2.456771e+16
+            max_flops = 2e+19
+            total_eval_flops = max_flops * 10
             return BenchmarkConfig(
                 space=llm.get_pipeline_space(),
                 params_estimator=llm.parameters_estimator,
@@ -72,12 +73,10 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool) -> BenchmarkCo
             )
         case BenchmarkEnum.TABPFN:
             bench = tabpfn.get_benchmark()
-            # (min_params, min_data, min_flops), (max_params, max_data, max_flops) = tabpfn.get_macro_params_bounds(bench)
-            # print(f"Macro bounds - Params: ({min_params:e}, {max_params:e}), Data: ({min_data:e}, {max_data:e}), Flops: ({min_flops:e}, {max_flops:e})")
-            max_flops = 3.850136e+15
+            
             min_flops = 2.921580e+10
-            grid_diagonal = 4 + 3 # d_model + n_layers
-            total_eval_flops = max_flops * grid_diagonal * 0.5
+            max_flops = 3.850136e+15
+            total_eval_flops = max_flops * 10
             return BenchmarkConfig(
                 space=tabpfn.get_pipeline_space(),
                 params_estimator=tabpfn.parameters_estimator_wrapper(bench),

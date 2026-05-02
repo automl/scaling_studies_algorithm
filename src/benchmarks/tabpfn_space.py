@@ -104,11 +104,11 @@ def evaluate_pipeline_wrapper(bench: TabPFNBenchmark, lc_aware: bool = False):
             print(f"Benchmark query failed with config: {config} result: {result}")
         return {
             "objective_to_minimize": objective, 
-            "cost": float(result["model_stats"]["flops"]), 
+            # "cost": float(result["model_stats"]["flops"]), 
             "learning_curve": lc,
             "info_dict": {
                 "n_param": int(result["model_stats"]["params"]),
-                "flops": float(result["model_stats"]["flops"]),
+                # "flops": float(result["model_stats"]["flops"]),
                 "n_data": total_cells,
                 "predictions": result["predictions"],
                 "model_stats": result["model_stats"],
@@ -161,10 +161,8 @@ class PipelineScalingConfig(neps.PipelineSpace):
          is_scaling=True,
     )
     num_layers= neps.Integer(
-        lower=1,
+        lower=2,
         upper=8,
-        log=True,
-        log_base=2,
         is_scaling=True,
     )
     max_features= neps.Integer(
@@ -172,16 +170,12 @@ class PipelineScalingConfig(neps.PipelineSpace):
         upper=128,
         prior=32,
         prior_confidence='high',
-        # log=True,
-        # log_base=2,
     )
     num_datapoints_max= neps.Integer(
         lower=128,
         upper=512,
         prior=128,
         prior_confidence='high',
-        # log=True,
-        # log_base=2,
     )
    
 logging.basicConfig(level=logging.INFO,)
@@ -234,11 +228,11 @@ def get_pipeline_space():
 
 if __name__ == '__main__':
     min_flop_conf = dict(
-        lr=0.001,
+        lr=0.0001,
         effective_batch_size=64,
-        embedding_size=64,
-        total_cells=1073741823,
-        num_layers=8,
+        embedding_size=256,
+        total_cells=1073741824,
+        num_layers=32,
         max_features=35,
         num_datapoints_max=236,
     )

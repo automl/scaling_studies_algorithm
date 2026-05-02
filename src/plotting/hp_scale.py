@@ -174,8 +174,8 @@ if __name__ == "__main__":
     # path = Path("scripts/results/openclip_grid_search/grid_search/seed_40")
     bench = BenchmarkEnum.LLM
     pathes = {
-        BenchmarkEnum.OPENCLIP:Path("/work/dlclarge1/alipourn-benchmark_res/openclip/grid_search"),
-        BenchmarkEnum.LLM: Path("/work/dlclarge1/alipourn-benchmark_res/llm/grid_search")
+        BenchmarkEnum.OPENCLIP:Path("/work/dlclarge1/alipourn-scan_suite/openclip/grid_search"),
+        BenchmarkEnum.LLM: Path("/work/dlclarge1/alipourn-scan_suite/llm/grid_search")
     }
     from surrogate_benchmark.vlm.api import VLMBenchmark, VLMConfig, Target
     path = pathes[bench]

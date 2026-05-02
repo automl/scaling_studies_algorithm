@@ -12,10 +12,11 @@ from src.benchmarks.configs import BenchmarkEnum, get_benchmark
 from src.benchmarks.llm_space import LLM_TARGETS
 from src.benchmarks.openclip_space import OPENCLIP_TARGETS
 from src.benchmarks.tabpfn_space import TABPFN_TARGETS
-
+from src.benchmarks.configs import BenchmarkEnum, get_benchmark
 def get_total_flops_for_seed(
     *,
     path: str | Path,
+    bench_max_flops: float,
     seed: str | int | None,
     key_to_extract: str | None = None,
 ) -> float:
@@ -41,11 +42,16 @@ def get_total_flops_for_seed(
             return 1.0
 
         costs = []
+        
         for config_id, config_result in _fulldf.iterrows():
             if config_result["state"] != State.SUCCESS:
                 continue
             costs.append(get_cost(config_id))
-        
+        costs_arr = np.array(costs, dtype=float)
+        mask = costs_arr > (bench_max_flops * 1.1)
+        if np.any(mask):
+            print(f"  - Warning: Some costs exceed the benchmark's max FLOPs ({bench_max_flops:.2e}). Capping those costs.")
+            raise Exception(f"Costs exceeding max FLOPs: {costs_arr[mask]}")
         total_cost = sum(costs)
         print(f"  - Processed seed {seed} for {path.parent.name}: {total_cost:.2e} FLOPs")
         return total_cost
@@ -58,24 +64,24 @@ def get_total_flops_for_seed(
         return 0.0
 
 if __name__ == "__main__":
-    results_dir = Path("/work/dlclarge1/alipourn-benchmark_res")
+    results_dir = Path("/work/dlclarge1/alipourn-scan_suite")
     
     all_seeds = list(set(range(40, 51)))
     optimizers_dict = {
-        "random_search": all_seeds,
-        "random_search_with_priors": all_seeds,
-        "chinchilla_approach1": all_seeds,
-        "chinchilla_approach1_with_priors": all_seeds,
-        "chinchilla_approach2": all_seeds,
-        "chinchilla_approach2_with_priors": all_seeds,
+        # "random_search": all_seeds,
+        # "random_search_with_priors": all_seeds,
+        # "chinchilla_approach1": all_seeds,
+        # "chinchilla_approach1_with_priors": all_seeds,
+        # "chinchilla_approach2": all_seeds,
+        # "chinchilla_approach2_with_priors": all_seeds,
         "carbs": all_seeds,
         "carbs_with_priors": all_seeds,
     }
 
     benchmarks = [
         # BenchmarkEnum.OPENCLIP.value, 
-        # BenchmarkEnum.LLM.value,
-        BenchmarkEnum.TABPFN.value
+        BenchmarkEnum.LLM.value,
+        # BenchmarkEnum.TABPFN.value
         ]
     
     grand_total_flops = 0
@@ -85,6 +91,7 @@ if __name__ == "__main__":
     print(f"{'='*60}\n")
 
     for benchmark_name in benchmarks:
+        bench = get_benchmark(benchmark_name, lc_aware=False)  # Ensure benchmark config is loaded
         benchmark_total_flops = 0
         print(f"Processing benchmark: {benchmark_name}")
         
@@ -110,6 +117,7 @@ if __name__ == "__main__":
                         path=optimizer_path,
                         seed=seed,
                         key_to_extract="cost",
+                        bench_max_flops =bench.max_flops,
                     )
                     benchmark_total_flops += total_flops
         

@@ -174,8 +174,8 @@ if __name__ == "__main__":
     # path = Path("scripts/results/openclip_grid_search/grid_search/seed_40")
     bench = BenchmarkEnum.OPENCLIP
     pathes = {
-        BenchmarkEnum.OPENCLIP:Path("/work/dlclarge1/alipourn-benchmark_res/openclip/carbs"),
-        # BenchmarkEnum.LLM: Path("/work/dlclarge1/alipourn-benchmark_res/llm/grid_search")
+        BenchmarkEnum.OPENCLIP:Path("/work/dlclarge1/alipourn-scan_suite/openclip/carbs"),
+        # BenchmarkEnum.LLM: Path("/work/dlclarge1/alipourn-scan_suite/llm/grid_search")
     }
     path = pathes[bench]
     targets = ["val_loss"]
@@ -194,7 +194,7 @@ if __name__ == "__main__":
 
     def get_cost(idx: str | int) -> float:
         row = _fulldf.loc[idx]
-        return float(row['cost']) * 1e9
+        return float(row['cost'])
 
     for config_id, config_result in _fulldf.iterrows():
         if config_result["state"] != State.SUCCESS:

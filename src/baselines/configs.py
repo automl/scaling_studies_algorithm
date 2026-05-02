@@ -19,8 +19,8 @@ class OptimizerEnum(StrEnum):
     CARBS = "carbs"
     GRID_SEARCH = "grid_search"
 
-def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, seen_datapoints_estimator, flops_estimator, aspect_ratio_fn, data_parameter_name, size_per_numerical_dimension=10):
-    def get_optimizer(optimizer_name: OptimizerEnum, root_dir, max_evaluation_flops, max_target_flops = 0, seed = 1, use_priors = False) -> tuple[Callable[..., Any] | CustomOptimizer, dict[str, Any]]:
+def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, seen_datapoints_estimator, flops_estimator, aspect_ratio_fn, data_parameter_name, benchmark_type, size_per_numerical_dimension=10):
+    def get_optimizer(optimizer_name: OptimizerEnum, root_dir, max_evaluation_flops, max_flops, seed = 1, use_priors = False) -> tuple[Callable[..., Any] | CustomOptimizer, dict[str, Any]]:
         kwargs = {}
         match optimizer_name:
             case OptimizerEnum.BO_SPACE_EXPANSION: 
@@ -30,7 +30,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     seen_datapoints_estimator=seen_datapoints_estimator,
                     flops_estimator=flops_estimator,
                     max_evaluation_flops=max_evaluation_flops,
-                    max_target_flops=max_target_flops,
+                    max_target_flops=max_flops,
                     device='cpu',
                     sampling_strategy="space_expansion",
                 ), kwargs
@@ -42,7 +42,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     seen_datapoints_estimator=seen_datapoints_estimator,
                     flops_estimator=flops_estimator,
                     max_evaluation_flops=max_evaluation_flops,
-                    max_target_flops=max_target_flops,
+                    max_target_flops=max_flops,
                     device='cpu',
                     sampling_strategy="left_budget_contraction",
                 ), kwargs
@@ -57,8 +57,10 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     aspect_ratio_fn=aspect_ratio_fn,
                     max_evaluation_flops=max_evaluation_flops,
                     data_parameter_name=data_parameter_name,
+                    max_flops=max_flops,
                     strategy="approach1",
                     use_priors=use_priors,
+                    benchmark_type=benchmark_type,
                 ), kwargs
         
             case OptimizerEnum.CHINCHILLA_APPROACH2: 
@@ -70,8 +72,10 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     aspect_ratio_fn=aspect_ratio_fn,
                     max_evaluation_flops=max_evaluation_flops,
                     data_parameter_name=data_parameter_name,
+                    max_flops=max_flops,
                     strategy="approach2",
                     use_priors=use_priors,
+                    benchmark_type=benchmark_type,
                 ), kwargs
         
             case OptimizerEnum.CHINCHILLA_GEMSTONES: 
@@ -83,8 +87,10 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     aspect_ratio_fn=aspect_ratio_fn,
                     max_evaluation_flops=max_evaluation_flops,
                     data_parameter_name=data_parameter_name,
+                    max_flops=max_flops,
                     strategy="gemstones",
                     use_priors=use_priors,
+                    benchmark_type=benchmark_type,
                 ), kwargs
         
             case OptimizerEnum.RANDOM_SEARCH: 
@@ -92,7 +98,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     space,
                     use_priors=use_priors,
                     ignore_fidelity=True,
-                    constraints_func= lambda conf: max_evaluation_flops - flops_estimator(**conf)
+                    constraints_func= lambda conf: max_flops - flops_estimator(**conf)
                 ), kwargs
             case OptimizerEnum.CARBS: 
                 from src.baselines.carbs_utils import get_carbs_optimizer, evaluate_pipeline_wrapper
@@ -103,11 +109,12 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     seen_datapoints_estimator=seen_datapoints_estimator,
                     flops_estimator=flops_estimator,
                     max_evaluation_flops=max_evaluation_flops,
+                    max_flops=max_flops,
                     data_parameter_name=data_parameter_name,
                     evaluate_pipeline=evaluate_pipeline,
                     root_dir=root_dir,
                     )
-                return optimizer, kwargs | {"evaluate_pipeline": evaluate_pipeline_wrapper(carbs_opt, evaluate_pipeline)}
+                return optimizer, kwargs | {"evaluate_pipeline": evaluate_pipeline_wrapper(carbs_opt, evaluate_pipeline, flops_estimator, max_flops)}
             case OptimizerEnum.GRID_SEARCH:
                 return lambda space: random_search( # changed to random search with no limit on budget
                     space,

@@ -100,9 +100,15 @@ def convert_space_to_carbs_space(space: dict[str, Any]):
         else:
             raise NotImplementedError(f"Space type {type(attr_value)} is not supported.")
 
-def evaluate_pipeline_wrapper(carbs_opt, evaluate_pipeline):
+def evaluate_pipeline_wrapper(carbs_opt, evaluate_pipeline, flop_estimator, max_flops):
     def eval_pipeline(**config):
+        flops = flop_estimator(**config)  # Ensure config is valid for flop estimation before evaluation
+            
         res = evaluate_pipeline(**config)
+        if flops > max_flops:
+            res["objective_to_minimize"] = float('inf')
+            res["cost"] = 0
+            
         obs_out = carbs_opt.observe(ObservationInParam(input=config, output=res["objective_to_minimize"], cost=res["cost"]))
         return res
     return eval_pipeline
@@ -118,7 +124,8 @@ class CARBSSuggester(ScalingLawGuidedOptimizer, AskFunction):
                  flops_estimator: Callable,
                  evaluate_pipeline: Callable,
                  max_evaluation_flops: float,
-                 data_parameter_name
+                 data_parameter_name: str,
+                 max_flops: float
                 ):
         self.carbs = carbs_opt
         self.space: neps.SearchSpace = space
@@ -127,6 +134,7 @@ class CARBSSuggester(ScalingLawGuidedOptimizer, AskFunction):
         self.seen_datapoints_estimator = seen_datapoints_estimator
         self.flops_estimator = flops_estimator
         self.min_flops, self.max_flops = self.find_flops_bounds()
+        self.max_flops = max_flops
         self.use_priors = use_priors
         self.max_evaluation_flops = max_evaluation_flops
         self.data_parameter_name = data_parameter_name
@@ -629,7 +637,7 @@ class CARBSSuggester(ScalingLawGuidedOptimizer, AskFunction):
         
         # create heatmaps
         # import json
-        # with open(Path("/work/dlclarge1/alipourn-benchmark_res/llm/carbs/seed_40/summary/extrapolation_results_all_ratios.json"), "r") as f:
+        # with open(Path("/work/dlclarge1/alipourn-scan_suite/llm/carbs/seed_40/summary/extrapolation_results_all_ratios.json"), "r") as f:
         #     extrapolation_results_by_spent_ratio = json.load(f)
         if extrapolation_results_by_spent_ratio:
             heatmap_result = Chinchilla_Guided_Scaling._plot_interpolation_extrapolation_heatmap(extrapolation_results_by_spent_ratio)
@@ -674,7 +682,8 @@ def get_carbs_optimizer(space: neps.SearchSpace, seed: int,
                         seen_datapoints_estimator: Callable, flops_estimator: Callable,
                         evaluate_pipeline: Callable,
                         data_parameter_name,
-                        root_dir) -> tuple[Callable[..., Any] | CustomOptimizer, CARBS]:
+                        root_dir,
+                        max_flops) -> tuple[Callable[..., Any] | CustomOptimizer, CARBS]:
     space = convert_neps_to_classic_search_space(space)
     space_copy = dict(copy.deepcopy(space).searchables)
     if use_priors:
@@ -685,13 +694,14 @@ def get_carbs_optimizer(space: neps.SearchSpace, seed: int,
     param_spaces = list(convert_space_to_carbs_space(space_copy))
     checkpoint_dir = Path(root_dir) / "checkpoints"
     carbs_params = CARBSParams(
+        max_suggestion_cost=max_flops,
         num_random_samples=4,
         better_direction_sign=-1,
         is_wandb_logging_enabled=False,
         resample_frequency=0,
         checkpoint_dir=checkpoint_dir,
         seed=seed,
-        initial_search_radius=0.15,
+        initial_search_radius=0.3,
     )
     print("param_spaces: ", param_spaces)
     carbs_opt = CARBS(carbs_params, param_spaces)
@@ -706,6 +716,7 @@ def get_carbs_optimizer(space: neps.SearchSpace, seed: int,
             max_evaluation_flops=max_evaluation_flops,
             data_parameter_name=data_parameter_name,
             evaluate_pipeline=evaluate_pipeline,
+            max_flops=max_flops,
         ),
     )
     return opt, carbs_opt

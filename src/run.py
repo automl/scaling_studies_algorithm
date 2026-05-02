@@ -46,6 +46,7 @@ if __name__ == '__main__':
             flops_estimator=benchmark.flops_estimator,
             aspect_ratio_fn=benchmark.aspect_ratio_fn,
             data_parameter_name=benchmark.data_parameter_name,
+            benchmark_type=BenchmarkEnum(args.benchmark),
             # type: ignore
         )
         seed_range = [40] if args.seed == 0 else [args.seed]
@@ -55,12 +56,12 @@ if __name__ == '__main__':
             random.seed(seed)
             np.random.seed(seed)
             torch.manual_seed(seed)
-            root_dir = f"/work/dlclarge1/alipourn-benchmark_res/{args.benchmark}/{optimizer_name + "_with_priors" if args.use_priors else optimizer_name}/seed_{seed}"
+            root_dir = f"/work/dlclarge1/alipourn-scan_suite/{args.benchmark}/{optimizer_name + "_with_priors" if args.use_priors else optimizer_name}/seed_{seed}"
             optimizer, kwargs = get_optimizer(
                 OptimizerEnum(optimizer_name), 
                 root_dir=root_dir,
                 max_evaluation_flops=benchmark.max_evaluation_flops, 
-                max_target_flops=int(benchmark.max_evaluation_flops/2),
+                max_flops=int(benchmark.max_flops),
                 seed=seed,
                 use_priors=args.use_priors,
             )

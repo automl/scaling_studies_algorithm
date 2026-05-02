@@ -207,7 +207,7 @@ def plot_optimizer_extrapolation(
 if __name__ == "__main__":
     from pathlib import Path
     
-    results_dir = Path("/work/dlclarge1/alipourn-benchmark_res")
+    results_dir = Path("/work/dlclarge1/alipourn-scan_suite")
     loss_key = "objective_to_minimize"
     
     # Seeds to process
@@ -237,7 +237,7 @@ if __name__ == "__main__":
         print(f"{'='*60}")
         
         targets = {BenchmarkEnum.LLM.value: LLM_TARGETS, BenchmarkEnum.OPENCLIP.value: OPENCLIP_TARGETS}
-        flop_range = (5e16 if benchmark_name == BenchmarkEnum.OPENCLIP.value else 9.99e18, get_benchmark(benchmark_name, False).max_evaluation_flops * 0.9 * (1e9 if benchmark_name == BenchmarkEnum.OPENCLIP.value else 1))
+        flop_range = (5e16 if benchmark_name == BenchmarkEnum.OPENCLIP.value else 9.99e18, get_benchmark(benchmark_name, False).max_evaluation_flops * 0.9)
         for target in targets[benchmark_name]:
             try:
                 target_val = target.value if hasattr(target, 'value') else target

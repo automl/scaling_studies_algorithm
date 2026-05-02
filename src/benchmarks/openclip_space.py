@@ -36,11 +36,11 @@ def normalize_openclip_config(raw_conf: dict) -> dict:
         "beta1": (0.9, 0.99),
         "beta2": (0.95, 0.999),
         "eps": (1.0e-8, 1.0e-6),
-        "train_num_samples": (0.6, 60.0),
     }
     int_bounds = {
         "vision_width": (0, 8),
         "text_width": (0, 8),
+        "train_num_samples": (6e5, 6e7),
     }
 
     for name, value in list(conf.items()):
@@ -60,7 +60,7 @@ def parameters_estimator_wrapper(bench: VLMBenchmark):
         conf = normalize_openclip_config(conf)
         conf["vision_width"] = int(conf["vision_width"] * 64 if conf["vision_width"] > 0 else 32)
         conf["text_width"] = int(conf["text_width"] * 64 if conf["text_width"] > 0 else 32)
-        conf["total_samples_planned"] = int(conf["train_num_samples"] * 1e6)
+        conf["total_samples_planned"] = int(conf["train_num_samples"])
         conf["training_progress"] = 1.0
         conf.pop("train_num_samples")
         config = VLMConfig(**conf)
@@ -95,7 +95,6 @@ def evaluate_pipeline_wrapper(bench: VLMBenchmark, lc_aware: bool = False):
 
         vision_width = vision_width * 64 if vision_width > 0 else 32
         text_width = text_width * 64 if text_width > 0 else 32
-        train_num_samples *= 1e6
         train_num_samples = int(train_num_samples)
         config = VLMConfig(
             lr=round(lr, 7),
@@ -110,7 +109,7 @@ def evaluate_pipeline_wrapper(bench: VLMBenchmark, lc_aware: bool = False):
             training_progress=1.0
         )
         lc = None
-        print(f"lc_aware {lc_aware}")
+        logging.info(f"lc_aware option is set to {lc_aware}")
         if lc_aware:
             lc = []
             confs = []
@@ -128,18 +127,18 @@ def evaluate_pipeline_wrapper(bench: VLMBenchmark, lc_aware: bool = False):
                 if result["failed"]:
                     return {
                         "objective_to_minimize": float('nan'), 
-                        "cost": float(result["model_stats"]["total_gflops"]), 
+                        "cost": float(result["model_stats"]["total_flops"]), 
                         "learning_curve": None,
                         "info_dict": {
                             "n_param": int(result["model_stats"]["params"]),
-                            "flops": float(result["model_stats"]["total_gflops"]),
+                            "flops": float(result["model_stats"]["total_flops"]),
                             "n_data": train_num_samples,
                             "predictions": result["predictions"],
                             "model_stats": result["model_stats"],
                         },
                     }
                 n_data = config.training_progress * train_num_samples # num tokens seen so far
-                flops = float(result["model_stats"]["total_gflops"])
+                flops = float(result["model_stats"]["total_flops"])
                 lc.append((n_data, flops, float(result["predictions"][VLMTarget.VAL_LOSS.value]["mean"])))
         config.training_progress = 1.0 # for double caution
         result = bench.query(config)
@@ -147,11 +146,11 @@ def evaluate_pipeline_wrapper(bench: VLMBenchmark, lc_aware: bool = False):
             print(f"Benchmark query failed with config: {config}")
         return {
             "objective_to_minimize": float((result.get("predictions") or {}).get(VLMTarget.VAL_LOSS.value, {}).get('mean', float('nan'))), 
-            "cost": float(result["model_stats"]["total_gflops"]), 
+            "cost": float(result["model_stats"]["total_flops"]), 
             "learning_curve": lc,
             "info_dict": {
                 "n_param": int(result["model_stats"]["params"]),
-                "flops": float(result["model_stats"]["total_gflops"]),
+                "flops": float(result["model_stats"]["total_flops"]),
                 "n_data": train_num_samples,
                 "predictions": result["predictions"],
                 "model_stats": result["model_stats"],
@@ -164,20 +163,19 @@ def flops_estimator_wrapper(bench: VLMBenchmark):
         conf = normalize_openclip_config(conf)
         conf["vision_width"] = int(conf["vision_width"] * 64 if conf["vision_width"] > 0 else 32)
         conf["text_width"] = int(conf["text_width"] * 64 if conf["text_width"] > 0 else 32)
-        conf["total_samples_planned"] = int(conf["train_num_samples"] * 1e6)
+        conf["total_samples_planned"] = int(conf["train_num_samples"])
         conf["training_progress"] = 1.0
         conf.pop("train_num_samples")
         config = VLMConfig(**conf)
         
         stats = bench.get_model_stats(config)
-        return stats["total_gflops"]
+        return stats["total_flops"]
 
     return flops_estimator
 
 def aspect_ratio_fn(lr, wd, beta1, beta2, warmup_fraction, eps, vision_width, text_width, train_num_samples) -> float:
     vision_width = vision_width * 64 if vision_width > 0 else 32
     text_width = text_width * 64 if text_width > 0 else 32
-    train_num_samples *= 1e6
     train_num_samples = int(train_num_samples)
     import math
     vision_ratio = vision_width  / 12 # constant n_layers
@@ -185,11 +183,7 @@ def aspect_ratio_fn(lr, wd, beta1, beta2, warmup_fraction, eps, vision_width, te
     return vision_ratio / text_ratio
 
 def seen_datapoints_estimator(lr, wd, beta1, beta2, warmup_fraction, eps, vision_width, text_width, train_num_samples):
-    vision_width = vision_width * 64 if vision_width > 0 else 32
-    text_width = text_width * 64 if text_width > 0 else 32
-    train_num_samples *= 1e6
-    train_num_samples = int(train_num_samples)
-    return train_num_samples
+    return int(train_num_samples)
 
 class PipelineScalingConfig(neps.PipelineSpace):
     # hps
@@ -218,9 +212,9 @@ class PipelineScalingConfig(neps.PipelineSpace):
     eps = neps.Float(lower=1e-8, upper=1e-6, log=True)
 
     # scale space
-    train_num_samples = neps.Float(
-        lower=0.6,
-        upper=60,
+    train_num_samples = neps.Integer(
+        lower=int(6e5),
+        upper=int(6e7),
         log=True,
         is_scaling=True,
     )
@@ -245,7 +239,7 @@ def get_macro_params_bounds(bench: VLMBenchmark) -> tuple[tuple[float, float, fl
         eps=1e-8,
         vision_width=8,
         text_width=8,
-        train_num_samples=60,
+        train_num_samples=int(60 * 1e6),
     )
     
     min_flop_conf = dict(
@@ -257,7 +251,7 @@ def get_macro_params_bounds(bench: VLMBenchmark) -> tuple[tuple[float, float, fl
         eps=1e-8,
         vision_width=0,
         text_width=0,
-        train_num_samples=0.6,
+        train_num_samples=int(0.6 * 1e6),
     )
 
     res = evaluate_pipeline_wrapper(bench)(
@@ -286,19 +280,10 @@ def get_pipeline_space():
     return space
 
 if __name__ == '__main__':
-    conf = dict(
-        beta1= 0.9342918625473976,
-        beta2= 0.9613052397668361,
-        eps= 2.14819375684809e-08,
-        lr= 0.024001726415339576,
-        text_width= 0,
-        train_num_samples= 20.0,
-        vision_width= 0,
-        warmup_fraction= 0.5175995081663132,
-        wd= 0.0008546430792308565
-    )
+
     bench = get_benchmark()
-    print(evaluate_pipeline_wrapper(bench, lc_aware=True)(**conf))
+    # print(evaluate_pipeline_wrapper(bench, lc_aware=True)(**conf))
+    get_macro_params_bounds(bench)
     
 #     parser = argparse.ArgumentParser(description='Run scaling study on OpenCLIP benchmark')
 #     parser.add_argument('--study-name', type=str, required=True, 

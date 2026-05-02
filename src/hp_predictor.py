@@ -61,7 +61,7 @@ def predict_hp_from_scaling_law(
     if pareto_result is None:
         raise ValueError("Could not compute Pareto front from losses/flops")
 
-    pareto_flops, pareto_losses = pareto_result
+    pareto_flops, pareto_losses, pareto_indices = pareto_result
     pareto_ids = _build_pareto_indices(
         losses=[float(v) for v in losses],
         flops=[float(v) for v in flops],

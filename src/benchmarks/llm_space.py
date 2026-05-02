@@ -172,9 +172,9 @@ class PipelineScalingConfig(neps.PipelineSpace):
         prior_confidence='high',
     )
 
-    n_tokens = neps.Float(
-        lower=2e8,
-        upper=1.6e10,
+    n_tokens = neps.Integer(
+        lower=int(2e8),
+        upper=int(1.6e10),
         log=True,
         is_scaling=True,
     )
@@ -217,4 +217,4 @@ def get_pipeline_space():
     return space
 
 if __name__ == '__main__':
-    ...
+    get_macro_params_bounds(get_benchmark())
