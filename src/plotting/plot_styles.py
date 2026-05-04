@@ -38,8 +38,8 @@ OPTIMIZER_COLORS = {
     "chinchilla_guided_scaling": "#8214A1",
     
     # Chinchilla approach 1 variants
-    "chinchilla_approach1": "#005C31",
-    "chinchilla_approach1_with_priors": "#005C31",
+    "chinchilla_approach1": "#F4A261",
+    "chinchilla_approach1_with_priors": "#F4A261",
     
     # Chinchilla approach 2 variants
     "chinchilla_approach2": "#0173B2",

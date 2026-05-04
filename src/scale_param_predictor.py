@@ -4,13 +4,19 @@ from typing import cast
 import numpy as np
 
 from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer
-from src.baselines.chinchilla_guided_scaling import ScalingLawParameters
+# from src.baselines.chinchilla_guided_scaling import ScalingLawParameters
 from src.baselines.chinchilla_guided_scaling import Chinchilla_Guided_Scaling
 from src.scaling_law_fit import fit_power_law, predict_from_loglog_fit
 
 class ScaleParamPredictorTypes(Enum):
-    POWER_LAW_FIT = "Power Law Fit"
-    CHINCHILLA3 = "Chinchilla Approach3"
+    def __new__(cls, label: str, color: str):
+        obj = object.__new__(cls)
+        obj._value_ = label
+        obj.color = color
+        return obj
+
+    POWER_LAW_FIT = ("Power Law Fit", "#1f77b4")
+    CHINCHILLA3 = ("Chinchilla Approach3", "#ff7f0e")
 
 @dataclass
 class ScaleParamFitInfo:
@@ -23,6 +29,11 @@ class ScaleParamFitInfo:
     # predicted_loss_upper: float
     # predicted_loss_lower: float
 
+
+@dataclass
+class ScaleParamChinchillaFitInfo:
+    a: float
+    b: float
 
 def _flatten_rows(
     rows: list[tuple[float, float, float, float]] | list[list[tuple[float, float, float, float]]],
@@ -168,7 +179,7 @@ def predict_scale_parameters(
     *,
     rows: list[tuple[float, float, float, float]] | list[list[tuple[float, float, float, float]]],
     best_loss_guess: float,
-) -> tuple[tuple[float, float], ScaleParamFitInfo | ScalingLawParameters]:
+) -> tuple[tuple[float, float], ScaleParamFitInfo | ScaleParamChinchillaFitInfo]:
     """Predict loss for a single rows set and return the scalar prediction plus fit info."""
 
     if predictor_type == ScaleParamPredictorTypes.POWER_LAW_FIT:
@@ -289,7 +300,7 @@ def predict_scale_parameters(
         if n_target <= 0 or d_target <= 0:
             raise ValueError("Could not derive positive optimal N and D from Chinchilla fit")
 
-        return (n_target, d_target), scaling_params
+        return (n_target, d_target), ScaleParamChinchillaFitInfo(a=a, b=b)
         
 
     raise ValueError(f"Unknown predictor type: {predictor_type}")

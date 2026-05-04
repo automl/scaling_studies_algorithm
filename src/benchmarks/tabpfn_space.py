@@ -104,11 +104,11 @@ def evaluate_pipeline_wrapper(bench: TabPFNBenchmark, lc_aware: bool = False):
             print(f"Benchmark query failed with config: {config} result: {result}")
         return {
             "objective_to_minimize": objective, 
-            # "cost": float(result["model_stats"]["flops"]), 
+            "cost": float(result["model_stats"]["flops"]), 
             "learning_curve": lc,
             "info_dict": {
                 "n_param": int(result["model_stats"]["params"]),
-                # "flops": float(result["model_stats"]["flops"]),
+                "flops": float(result["model_stats"]["flops"]),
                 "n_data": total_cells,
                 "predictions": result["predictions"],
                 "model_stats": result["model_stats"],
@@ -149,20 +149,20 @@ class PipelineScalingConfig(neps.PipelineSpace):
     total_cells = neps.Integer(
         lower=1048576,
         upper=1073741824,
-        # log=True,
-        # log_base=2,
         is_scaling=True,
     )
     embedding_size = neps.Integer(
          lower=16,
-         upper=64,
+         upper=256,
          log=True,
          log_base=2,
          is_scaling=True,
     )
     num_layers= neps.Integer(
-        lower=2,
-        upper=8,
+        lower=1,
+        upper=32,
+        log=True,
+        log_base=2,
         is_scaling=True,
     )
     max_features= neps.Integer(
@@ -184,9 +184,9 @@ def get_macro_params_bounds(bench: TabPFNBenchmark) -> tuple[tuple[float, float,
     max_flop_conf = dict(
         lr=0.05,
         effective_batch_size=256,
-        embedding_size=64,
+        embedding_size=256,
         total_cells=1073741824,
-        num_layers=8,
+        num_layers=32,
         max_features=128,
         num_datapoints_max=512,
     )
@@ -196,7 +196,7 @@ def get_macro_params_bounds(bench: TabPFNBenchmark) -> tuple[tuple[float, float,
         effective_batch_size=16,
         embedding_size=16,
         total_cells=1048576,
-        num_layers=1,
+        num_layers=2,
         max_features=32,
         num_datapoints_max=128,
     )
@@ -227,19 +227,21 @@ def get_pipeline_space():
     return space
 
 if __name__ == '__main__':
-    min_flop_conf = dict(
-        lr=0.0001,
-        effective_batch_size=64,
-        embedding_size=256,
-        total_cells=1073741824,
-        num_layers=32,
-        max_features=35,
-        num_datapoints_max=236,
-    )
+    # min_flop_conf = dict(
+    #     lr=0.0001,
+    #     effective_batch_size=64,
+    #     embedding_size=256,
+    #     total_cells=1073741824,
+    #     num_layers=32,
+    #     max_features=35,
+    #     num_datapoints_max=236,
+    # )
 
     bench = get_benchmark()
-    res = evaluate_pipeline_wrapper(bench)(
-        **min_flop_conf
-    )
-    print(res)
+    # res = evaluate_pipeline_wrapper(bench)(
+    #     **min_flop_conf
+    # )
+    # print(res)
+
+    get_macro_params_bounds(bench)
 

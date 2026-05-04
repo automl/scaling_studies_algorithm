@@ -282,51 +282,19 @@ def get_pipeline_space():
 if __name__ == '__main__':
 
     bench = get_benchmark()
-    # print(evaluate_pipeline_wrapper(bench, lc_aware=True)(**conf))
-    get_macro_params_bounds(bench)
-    
-#     parser = argparse.ArgumentParser(description='Run scaling study on OpenCLIP benchmark')
-#     parser.add_argument('--study-name', type=str, required=True, 
-#                         help='Name of the study to be created in neptune')
-    
-#     parser.add_argument('--optimizer', type=str, default="", choices=[opt.value for opt in OptimizerEnum],
-#                         help='Name of the optimizer to be used')
-#     parser.add_argument('--seed', type=int, default=0,
-#                         help='Seed for reproducability')
-    
-    
-#     parser.add_argument('--use-priors', action='store_true',
-#                         help='Use prior for the sampling approach')
-#     args = parser.parse_args()
-    
-#     pipeline_space = PipelineScalingConfig()
+    max_flop_conf = dict(
+        lr=0.0384861,
+        wd=1.0e-6,
+        beta1=0.99,
+        beta2=0.999,
+        warmup_fraction=0.75,
+        eps=6.567e-7,
+        vision_width=2,
+        text_width=1,
+        train_num_samples=int(0.6 * 1e6),
+    )
 
-#     bench = get_benchmark()
-
-#     # (min_params, min_data, min_flops), (max_params, max_data, max_flops) = get_macro_params_bounds(bench)
-#     # print(f"Macro bounds - Params: ({min_params:e}, {max_params:e}), Data: ({min_data:e}, {max_data:e}), Flops: ({min_flops:e}, {max_flops:e})")
-    
-# def get_optimizer_openclip():
-#     get_optimizer = get_optimizer_wrapper(
-#         pipeline_space=pipeline_space,
-#         evaluate_pipeline=evaluate_pipeline_wrapper(
-#             bench, 
-#             lc_aware=lc_aware,
-#         ),
-#         param_estimator=parameters_estimator_wrapper(bench),
-#         seen_datapoints_estimator=seen_datapoints_estimator,
-#         flops_estimator=flops_estimator_wrapper(bench),
-#         aspect_ratio_fn=aspect_ratio_fn,
-#         data_parameter_name="train_num_samples",
-#         size_per_numerical_dimension={
-#             "lr": 5,
-#             "wd": 5,
-#             "warmup_fraction": 5,
-#             "beta1": 1,
-#             "beta2": 1,
-#             "eps": 1,
-#             "vision_width": 10,
-#             "text_width": 10,
-#             "train_num_samples": 10,
-#         } # type: ignore
-#     )
+    res = evaluate_pipeline_wrapper(bench)(
+        **max_flop_conf
+    )
+    print(res)

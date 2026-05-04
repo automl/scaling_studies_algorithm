@@ -73,7 +73,7 @@ if __name__ == '__main__':
                     root_directory=root_dir,
                     cost_to_spend=benchmark.max_evaluation_flops if optimizer_name != OptimizerEnum.GRID_SEARCH else None, # we want to run the full grid search
                     worker_id=f"worker_1-{socket.gethostname()}-{os.getpid()}",
-                    overwrite_root_directory=True,
+                    overwrite_root_directory=optimizer_name != OptimizerEnum.GRID_SEARCH,
                     optimizer=optimizer,
                     **kwargs,
                 )

@@ -94,6 +94,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
 
         self.all_possible_model_configs = selected_model_configs
         self.config_list = config_list
+        print(config_list)
         self.base_optimizer = GridSearch( #type: ignore
             configs_list=config_list,
         )
@@ -201,7 +202,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         # Target multipliers: 5*N, 10*N, 20*N, 80*N (or adjusted based on domain)
         # data_multipliers = [5, 10, 20, 80]
         if self.benchmark_type == BenchmarkEnum.TABPFN:
-            data_multipliers = [200, 400, 800, 3200]
+            data_multipliers = [5, 30, 60, 80]
         elif self.benchmark_type == BenchmarkEnum.LLM:
             data_multipliers = [5, 10, 20, 80]
         elif self.benchmark_type == BenchmarkEnum.OPENCLIP:
@@ -220,10 +221,11 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         
         attempted_model_configs = defaultdict(list)  
         # Add initial config
-        initial_model_key = tuple(sorted((k, v) for k, v in config_list[0].items() if k != self.data_parameter_name))
-        conf1_n_params = self.params_estimator(**config_list[0])
-        attempted_model_configs[conf1_n_params].append(initial_model_key)
-        print(config_list)
+        if len(config_list) > 0:
+            initial_model_key = tuple(sorted((k, v) for k, v in config_list[0].items() if k != self.data_parameter_name))
+            conf1_n_params = self.params_estimator(**config_list[0])
+            attempted_model_configs[conf1_n_params].append(initial_model_key)
+            print(config_list)
         
         assert self.flops_estimator is not None and self.max_evaluation_flops is not None
         
@@ -259,7 +261,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                     action_probabilities = action_probabilities / action_probabilities.sum()
                 continue
                 
-            current_config = config_list[-1].copy()
+            current_config = config_list[-1].copy() if len(config_list) > 0 else base_config.copy()
             current_config[param_name] = model_params_grid[param_name][next_idx]
             
             model_key = tuple(sorted((k, v) for k, v in current_config.items() if k != self.data_parameter_name))

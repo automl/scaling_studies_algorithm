@@ -9,8 +9,8 @@ from src.plotting.plot_styles import OPTIMIZER_COLORS
 
 
 OPTIMIZER_LABELS: dict[str, str] = {
-    "random_search": "Random Search",
-    "random_search_with_priors": "Random Search (with priors)",
+    "random_search": "RS",
+    "random_search_with_priors": "RS (with priors)",
     "chinchilla_approach1": "Chinchilla A1",
     "chinchilla_approach1_with_priors": "Chinchilla A1 (with priors)",
     "chinchilla_approach2": "Chinchilla A2",
@@ -55,7 +55,7 @@ def _placeholder_plot(
     ylabel: str,
 ) -> tuple[Any, Any]:
     fig, ax = plt.subplots(figsize=figsize)
-    # ax.set_title(title, fontsize=14, fontweight="bold")
+    # ax.set_title(title, fontsize=14)
     ax.set_xlabel(xlabel, fontsize=15)
     ax.set_ylabel(ylabel, fontsize=15)
     ax.text(0.5, 0.5, "No optimizers in this group", ha="center", va="center", transform=ax.transAxes)
@@ -204,3 +204,131 @@ def _replot_lines(source_ax: Any, target_ax: Any) -> None:
                 edgecolor="none",
             )
 
+
+
+import matplotlib.pyplot as plt
+from matplotlib.collections import PathCollection, PolyCollection
+
+def merge_pareto_plots(benchmark_dict):
+    """
+    Takes a dictionary of {"Benchmark Name": (fig, ax)} and merges them 
+    into a single side-by-side NeurIPS-formatted figure.
+    """
+    num_plots = len(benchmark_dict)
+    
+    master_fig, master_axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 4))
+    
+    # Ensure master_axes is iterable even if there's only one plot
+    if num_plots == 1:
+        master_axes = [master_axes]
+
+    for i, (benchmark_name, (old_fig, old_ax)) in enumerate(benchmark_dict.items()):
+        new_ax = master_axes[i]
+
+        # 1. Extract and copy standard lines AND axhline/axvline
+        for line in old_ax.get_lines():
+            transform = line.get_transform()
+            
+            # Horizontal lines
+            if transform == old_ax.get_yaxis_transform():
+                new_ax.axhline(y=line.get_ydata()[0],
+                               label=line.get_label(),
+                               color=line.get_color(),
+                               linestyle=line.get_linestyle(),
+                               linewidth=line.get_linewidth(),
+                               zorder=line.get_zorder())
+                
+            # Vertical lines
+            elif transform == old_ax.get_xaxis_transform():
+                new_ax.axvline(x=line.get_xdata()[0],
+                               label=line.get_label(),
+                               color=line.get_color(),
+                               linestyle=line.get_linestyle(),
+                               linewidth=line.get_linewidth(),
+                               zorder=line.get_zorder())
+                
+            # Standard plotted lines
+            else:
+                new_ax.plot(line.get_xdata(), line.get_ydata(),
+                            label=line.get_label(),
+                            color=line.get_color(),
+                            linestyle=line.get_linestyle(),
+                            linewidth=line.get_linewidth(),
+                            marker=line.get_marker(),
+                            zorder=line.get_zorder())
+
+        # 2. Extract Collections (Scatter points AND fill_between shading)
+        for collection in old_ax.collections:
+            
+            # Handle Scatter Points
+            if isinstance(collection, PathCollection):
+                offsets = collection.get_offsets()
+                if len(offsets) > 0:
+                    new_ax.scatter(offsets[:, 0], offsets[:, 1],
+                                   label=collection.get_label(),
+                                   color=collection.get_facecolors()[0] if len(collection.get_facecolors()) else None,
+                                   alpha=collection.get_alpha(),
+                                   s=collection.get_sizes()[0] if len(collection.get_sizes()) else None,
+                                   zorder=collection.get_zorder())
+            
+            # Handle fill_between (Shaded confidence intervals)
+            # Handle fill_between (Shaded confidence intervals)
+            elif isinstance(collection, PolyCollection):
+                
+                # EXTRACT THE VERTICES HERE:
+                # Get the raw (N, 2) coordinate arrays from the path objects
+                verts = [path.vertices for path in collection.get_paths()]
+                
+                new_poly = PolyCollection(
+                    verts,  # <--- Pass the raw vertices, not the Path objects
+                    facecolors=collection.get_facecolor(),
+                    edgecolors=collection.get_edgecolor(),
+                    alpha=collection.get_alpha(),
+                    zorder=collection.get_zorder(), 
+                    label=collection.get_label()
+                )
+                new_ax.add_collection(new_poly)
+
+        # 3. Copy formatting (Scales, Limits, Grid)
+        new_ax.set_xscale(old_ax.get_xscale())
+        new_ax.set_yscale(old_ax.get_yscale())
+        new_ax.set_xlim(old_ax.get_xlim())
+        new_ax.set_ylim(old_ax.get_ylim())
+        
+        new_ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+        
+        # 4. Dynamic NeurIPS Title and Labels
+        panel_letter = chr(97 + i) 
+        new_ax.set_title(f"({panel_letter}) {benchmark_name}", fontsize=15, loc='left')
+        
+        new_ax.set_xlabel(old_ax.get_xlabel() or "Cumulative FLOPs", fontsize=15)
+        
+        # Only put the Y-axis label on the far left plot to save space
+        if i == 0:
+            new_ax.set_ylabel(old_ax.get_ylabel() or "Loss", fontsize=15)
+
+        # 5. Close the old figure to free up memory
+        plt.close(old_fig)
+
+    # --- THE UNIFIED LEGEND ---
+    # Grab the handles and labels ONLY from the first subplot to prevent duplicates
+    handles, labels = master_axes[0].get_legend_handles_labels()
+    
+    clean_handles, clean_labels = [], []
+    for h, l in zip(handles, labels):
+        # Ignore Matplotlib's hidden labels (starting with '_') and prevent accidental duplicates
+        if not l.startswith('_') and l not in clean_labels:
+            clean_handles.append(h)
+            clean_labels.append(l)
+
+    # Apply the single legend to the bottom of the master figure
+    master_fig.legend(clean_handles, clean_labels, loc='lower center',
+                      bbox_to_anchor=(0.5, -0.2),
+                      ncol=min(4, len(clean_labels)), fontsize=15, frameon=True)
+
+    # --- Adjust Layout ---
+    plt.tight_layout()
+    # Add padding to the bottom so the axes don't sit on top of the legend
+    master_fig.subplots_adjust(bottom=0.2)
+
+    return master_fig, master_axes

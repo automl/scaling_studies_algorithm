@@ -8,8 +8,14 @@ from src.baselines.chinchilla_guided_scaling import Chinchilla_Guided_Scaling
 from src.scaling_law_fit import fit_power_law, predict_from_loglog_fit
 
 class LossPredictorTypes(Enum):
-    KAPLAN = "Kaplan"
-    CHINCHILLA3 = "Chinchilla Approach3"
+    def __new__(cls, label: str, color: str):
+        obj = object.__new__(cls)
+        obj._value_ = label
+        obj.color = color
+        return obj
+
+    KAPLAN = ("Kaplan", "#1f77b4")
+    CHINCHILLA3 = ("Chinchilla Approach3", "#ff7f0e")
 
 @dataclass
 class KaplanScalingLawInfo:
