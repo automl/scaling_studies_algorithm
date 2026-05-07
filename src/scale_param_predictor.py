@@ -15,8 +15,8 @@ class ScaleParamPredictorTypes(Enum):
         obj.color = color
         return obj
 
-    POWER_LAW_FIT = ("Power Law Fit", "#1f77b4")
-    CHINCHILLA3 = ("Chinchilla Approach3", "#ff7f0e")
+    POWER_LAW_FIT = ("Direct $N$", "#1f77b4")
+    CHINCHILLA3 = ("Derived $N$", "#ff7f0e")
 
 @dataclass
 class ScaleParamFitInfo:

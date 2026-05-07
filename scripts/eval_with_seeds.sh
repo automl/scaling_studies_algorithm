@@ -1,9 +1,9 @@
 #!/bin/bash
 
-#SBATCH --partition=dllabdlc_gpu-rtx2080
+#SBATCH --partition=testdlc2_gpu-h200
 #SBATCH --mem=140G
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-gpu=1
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-gpu=2
 #SBATCH --job-name=eval_with_seeds
 #SBATCH --output=/home/alipourn/scaling_studies_algorithm/logs/%x-%j.log
 
@@ -13,14 +13,14 @@ conda activate scaling
 export PYTHONPATH="/home/alipourn/scaling_studies_algorithm:$PYTHONPATH"
 export CUDA_VISIBLE_DEVICES=0
 
-benchmark="${1:-openclip}"
+benchmark="${1:-llm}"
 
 
-for seed in 49 50; do
+for seed in 50; do
     # python -m src.run --optimizer grid_search --benchmark $benchmark --seed $seed 
-    # python -m src.run --optimizer carbs --benchmark $benchmark --seed $seed &
+    python -m src.run --optimizer carbs --benchmark $benchmark --seed $seed &
     # python -m src.run --optimizer carbs --benchmark $benchmark --seed $seed  --use-priors &
-    python -m src.run --optimizer chinchilla_approach1 --benchmark $benchmark --seed $seed  &
+    # python -m src.run --optimizer chinchilla_approach1 --benchmark $benchmark --seed $seed  &
     # python -m src.run --optimizer chinchilla_approach1 --benchmark $benchmark --seed $seed  --use-priors &
     # python -m src.run --optimizer chinchilla_approach2 --benchmark $benchmark --seed $seed  &
     # python -m src.run --optimizer chinchilla_approach2 --benchmark $benchmark --seed $seed  --use-priors &

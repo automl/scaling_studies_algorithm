@@ -69,6 +69,7 @@ loss_key = "objective_to_minimize"
 
 
 all_seeds = list(set(range(40, 51)))
+# all_seeds = [40, 41, 42, 43, 44, 47, 48]
 # all_seeds = [40]
 optimizers_dict = {
     "random_search": all_seeds,

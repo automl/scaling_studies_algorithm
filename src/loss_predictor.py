@@ -14,8 +14,8 @@ class LossPredictorTypes(Enum):
         obj.color = color
         return obj
 
-    KAPLAN = ("Kaplan", "#1f77b4")
-    CHINCHILLA3 = ("Chinchilla Approach3", "#ff7f0e")
+    KAPLAN = ("Indep. PL", "#1f77b4")
+    CHINCHILLA3 = ("Joint Param.", "#ff7f0e")
 
 @dataclass
 class KaplanScalingLawInfo:

@@ -68,19 +68,19 @@ if __name__ == "__main__":
     
     all_seeds = list(set(range(40, 51)))
     optimizers_dict = {
-        "random_search": all_seeds,
-        "random_search_with_priors": all_seeds,
-        "chinchilla_approach1": all_seeds,
-        "chinchilla_approach1_with_priors": all_seeds,
-        "chinchilla_approach2": all_seeds,
-        "chinchilla_approach2_with_priors": all_seeds,
+        # "random_search": all_seeds,
+        # "random_search_with_priors": all_seeds,
+        # "chinchilla_approach1": all_seeds,
+        # "chinchilla_approach1_with_priors": all_seeds,
+        # "chinchilla_approach2": all_seeds,
+        # "chinchilla_approach2_with_priors": all_seeds,
         "carbs": all_seeds,
         "carbs_with_priors": all_seeds,
     }
 
     benchmarks = [
-        BenchmarkEnum.OPENCLIP.value, 
-        # BenchmarkEnum.LLM.value,
+        # BenchmarkEnum.OPENCLIP.value, 
+        BenchmarkEnum.LLM.value,
         # BenchmarkEnum.TABPFN.value
         ]
     

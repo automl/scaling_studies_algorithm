@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 from typing import Any, cast, Callable
 
 import numpy as np
@@ -11,10 +12,10 @@ from src.plotting.plot_styles import OPTIMIZER_COLORS
 OPTIMIZER_LABELS: dict[str, str] = {
     "random_search": "RS",
     "random_search_with_priors": "RS (with priors)",
-    "chinchilla_approach1": "Chinchilla A1",
-    "chinchilla_approach1_with_priors": "Chinchilla A1 (with priors)",
-    "chinchilla_approach2": "Chinchilla A2",
-    "chinchilla_approach2_with_priors": "Chinchilla A2 (with priors)",
+    "chinchilla_approach1": "Iso-Param",
+    "chinchilla_approach1_with_priors": "Iso-Param (with priors)",
+    "chinchilla_approach2": "Iso-FLOP",
+    "chinchilla_approach2_with_priors": "Iso-FLOP (with priors)",
     "carbs": "CARBS",
     "carbs_with_priors": "CARBS (with priors)",
 }
@@ -208,6 +209,221 @@ def _replot_lines(source_ax: Any, target_ax: Any) -> None:
 
 import matplotlib.pyplot as plt
 from matplotlib.collections import PathCollection, PolyCollection
+from matplotlib.patches import Polygon
+
+
+def _flatten_axes(axes: Any) -> list[Any]:
+    axes_array = np.asarray(axes, dtype=object)
+    return axes_array.flatten().tolist()
+
+
+def _strip_panel_prefix(title: str) -> str:
+    return re.sub(r"^\([a-z]\)\s*", "", title).strip()
+
+
+def _copy_axis_artists(source_ax: Any, target_ax: Any) -> None:
+    """Copy the visible plotted artists from one Matplotlib axis to another."""
+    for line in source_ax.get_lines():
+        transform = line.get_transform()
+
+        if transform == source_ax.get_yaxis_transform():
+            target_ax.axhline(
+                y=line.get_ydata()[0],
+                label=line.get_label(),
+                color=line.get_color(),
+                linestyle=line.get_linestyle(),
+                linewidth=line.get_linewidth(),
+                alpha=line.get_alpha(),
+                zorder=line.get_zorder(),
+            )
+        elif transform == source_ax.get_xaxis_transform():
+            target_ax.axvline(
+                x=line.get_xdata()[0],
+                label=line.get_label(),
+                color=line.get_color(),
+                linestyle=line.get_linestyle(),
+                linewidth=line.get_linewidth(),
+                alpha=line.get_alpha(),
+                zorder=line.get_zorder(),
+            )
+        else:
+            target_ax.plot(
+                line.get_xdata(),
+                line.get_ydata(),
+                label=line.get_label(),
+                color=line.get_color(),
+                linestyle=line.get_linestyle(),
+                linewidth=line.get_linewidth(),
+                marker=line.get_marker(),
+                markersize=line.get_markersize(),
+                alpha=line.get_alpha(),
+                zorder=line.get_zorder(),
+            )
+
+    for collection in source_ax.collections:
+        if isinstance(collection, PathCollection):
+            offsets = collection.get_offsets()
+            if len(offsets) == 0:
+                continue
+
+            facecolors = collection.get_facecolors()
+            edgecolors = collection.get_edgecolors()
+            sizes = collection.get_sizes()
+            target_ax.scatter(
+                offsets[:, 0],
+                offsets[:, 1],
+                label=collection.get_label(),
+                c=facecolors if len(facecolors) else None,
+                edgecolors=edgecolors if len(edgecolors) else None,
+                s=sizes if len(sizes) else None,
+                alpha=collection.get_alpha(),
+                zorder=collection.get_zorder(),
+            )
+        elif isinstance(collection, PolyCollection):
+            verts = [path.vertices for path in collection.get_paths()]
+            if not verts:
+                continue
+
+            target_ax.add_collection(PolyCollection(
+                verts,
+                facecolors=collection.get_facecolor(),
+                edgecolors=collection.get_edgecolor(),
+                alpha=collection.get_alpha(),
+                zorder=collection.get_zorder(),
+                label=collection.get_label(),
+            ))
+
+    for patch in source_ax.patches:
+        if not isinstance(patch, Polygon):
+            continue
+
+        target_ax.add_patch(Polygon(
+            patch.get_xy(),
+            closed=patch.get_closed(),
+            facecolor=patch.get_facecolor(),
+            edgecolor=patch.get_edgecolor(),
+            linewidth=patch.get_linewidth(),
+            linestyle=patch.get_linestyle(),
+            alpha=patch.get_alpha(),
+            zorder=patch.get_zorder(),
+            label=patch.get_label(),
+        ))
+
+
+def _copy_axis_format(source_ax: Any, target_ax: Any, *, show_title: bool = True) -> None:
+    target_ax.set_xscale(source_ax.get_xscale())
+    target_ax.set_yscale(source_ax.get_yscale())
+    target_ax.set_xlim(source_ax.get_xlim())
+    target_ax.set_ylim(source_ax.get_ylim())
+    target_ax.set_xlabel(source_ax.get_xlabel())
+    target_ax.set_ylabel(source_ax.get_ylabel())
+    title = _strip_panel_prefix(source_ax.get_title(loc="left")) if show_title else ""
+    target_ax.set_title(title, loc="left", fontsize=20)
+    target_ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+
+
+def _dedupe_legend(handles: list[Any], labels: list[str]) -> tuple[list[Any], list[str]]:
+    clean_handles: list[Any] = []
+    clean_labels: list[str] = []
+    for handle, label in zip(handles, labels):
+        if not label or label.startswith("_") or label in clean_labels:
+            continue
+        clean_handles.append(handle)
+        clean_labels.append(label)
+    return clean_handles, clean_labels
+
+
+def merge_split_composite_plots(
+    split_results: list[tuple[Any, Any]] | tuple[tuple[Any, Any], ...],
+    *,
+    group_titles: list[str] | tuple[str, ...] = ("All", "With priors", "Without priors"),
+    figsize: tuple[float, float] | None = None,
+    close_sources: bool = False,
+    n_per_row: int = 3,
+) -> tuple[Any, np.ndarray]:
+    """
+    Combine split composite plots into one figure with a shared legend.
+
+    Each input result is expected to be a ``(fig, axes)`` pair, such as the
+    all/with-priors/without-priors outputs returned by the composite plotting
+    functions. Axes are arranged in horizontal rows with n_per_row axes per row.
+    """
+    if not split_results:
+        raise ValueError("split_results must contain at least one (fig, axes) pair")
+
+    axes_per_group = [_flatten_axes(axes) for _fig, axes in split_results]
+    
+    # Flatten all axes from all groups into a single list
+    all_axes_flat = []
+    for source_axes in axes_per_group:
+        all_axes_flat.extend(source_axes)
+    
+    total_axes = len(all_axes_flat)
+    num_cols = n_per_row
+    num_rows = (total_axes + num_cols - 1) // num_cols  # Ceiling division
+    
+    if figsize is None:
+        figsize = (6 * num_cols, 3.8 * num_rows)
+
+    master_fig, master_axes = plt.subplots(num_rows, num_cols, figsize=figsize, squeeze=False)
+
+    shared_handles: list[Any] = []
+    shared_labels: list[str] = []
+
+    # Fill grid left-to-right, top-to-bottom with 3 per row
+    axis_idx = 0
+    for row_idx in range(num_rows):
+        for col_idx in range(num_cols):
+            target_ax = master_axes[row_idx, col_idx]
+            
+            if axis_idx >= len(all_axes_flat):
+                target_ax.axis("off")
+                continue
+            
+            source_ax = all_axes_flat[axis_idx]
+            _copy_axis_artists(source_ax, target_ax)
+            
+            # Copy format without title, we'll handle titles manually
+            _copy_axis_format(source_ax, target_ax, show_title=False)
+            
+            # Set title only in the first row, centered
+            if row_idx == 0:
+                title = _strip_panel_prefix(source_ax.get_title(loc="left"))
+                target_ax.set_title(title, loc="center", fontsize=20)
+            
+            # Keep x-axis labels only in the last row
+            if row_idx != num_rows - 1:
+                target_ax.set_xlabel("")
+            
+            handles, labels = target_ax.get_legend_handles_labels()
+            shared_handles.extend(handles)
+            shared_labels.extend(labels)
+
+            if target_ax.get_legend() is not None:
+                target_ax.get_legend().remove()
+            
+            axis_idx += 1
+
+    # Close source figures if requested
+    for source_fig, _source_axes in split_results:
+        if close_sources:
+            plt.close(source_fig)
+
+    clean_handles, clean_labels = _dedupe_legend(shared_handles, shared_labels)
+    if clean_handles:
+        master_fig.legend(
+            clean_handles,
+            clean_labels,
+            loc="lower center",
+            bbox_to_anchor=(0.5, -0.05),
+            ncol=min(4, len(clean_labels)),
+            fontsize=20,
+            frameon=True,
+        )
+
+    plt.tight_layout(rect=[0, 0.05, 1, 1])
+    return master_fig, master_axes
+
 
 def merge_pareto_plots(benchmark_dict):
     """

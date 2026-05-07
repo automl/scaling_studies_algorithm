@@ -485,7 +485,7 @@ def plot_optimizer_loss(
                 figsize=figsize,
                 title=f"{title} (with priors)",
                 xlabel="Normalized FLOPs (log)" if normalize_flops else "FLOPs (log)",
-                ylabel="Average Loss",
+                ylabel="Incumbent Loss",
             )
 
         if without_priors:
@@ -506,7 +506,7 @@ def plot_optimizer_loss(
                 figsize=figsize,
                 title=f"{title} (without priors)",
                 xlabel="Normalized FLOPs (log)" if normalize_flops else "FLOPs (log)",
-                ylabel="Average Loss",
+                ylabel="Incumbent Loss",
             )
 
         return (fig_all, ax_all), (fig_with, ax_with), (fig_without, ax_without)
@@ -633,7 +633,7 @@ def plot_optimizer_loss(
         ax.set_xlim(effective_flop_range[0], effective_flop_range[1])
     elif normalize_flops:
         ax.set_xlim(max(x_lim_min), min(x_lim_max))
-    ax.set_ylabel("Average Loss", fontsize=20)
+    ax.set_ylabel("Incumbent Loss", fontsize=20)
     # ax.set_title(title, fontsize=14)
     ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
     if not normalize_flops:
@@ -788,10 +788,12 @@ def calculate_normalized_rankings(
     Calculate relative rankings with normalized flop counts for cross-benchmark comparison.
     """
     ranking_metric = ranking_metric.lower()
-    if ranking_metric not in {"incumbent", "hypervolume", "pareto_area"}:
-        raise ValueError("ranking_metric must be one of 'incumbent', 'hypervolume', or 'pareto_area'")
+    if ranking_metric not in {"incumbent", "hypervolume", "pareto_area", "cwel"}:
+        raise ValueError("ranking_metric must be one of 'incumbent', 'hypervolume', 'pareto_area', or 'cwel'")
     if ranking_metric == "pareto_area" and true_pareto_info is None:
         raise ValueError("ranking_metric='pareto_area' requires true_pareto_info")
+    if ranking_metric == "cwel" and true_pareto_info is None:
+        raise ValueError("ranking_metric='cwel' requires true_pareto_info")
 
     # Get raw per-seed data for all optimizers. Ranking must happen after each
     # optimizer/seed metric curve is interpolated onto the same normalized FLOP
@@ -839,7 +841,7 @@ def calculate_normalized_rankings(
 
     interpolated_values_by_opt_seed: dict[str, dict[int | str, np.ndarray]] = {}
 
-    if ranking_metric in {"hypervolume", "pareto_area"}:
+    if ranking_metric in {"hypervolume", "pareto_area", "cwel"}:
         from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer
 
         loss_bounds, hv_flops_bounds = _get_hypervolume_bounds(all_per_seed_data)
@@ -857,7 +859,54 @@ def calculate_normalized_rankings(
                         global_loss_bounds=loss_bounds,
                         global_flops_bounds=hv_flops_bounds,
                     )
-                else:
+                elif ranking_metric == "cwel":
+                    # Compute CWEL directly. If log_scale is enabled, both the
+                    # interpolation coordinate and the weighting denominator use
+                    # log10(FLOPs), while the returned x-axis stays in raw FLOPs.
+                    losses_arr = np.asarray(losses, dtype=float)
+                    positive_mask = np.isfinite(seed_costs) & (seed_costs > 1e-8) & np.isfinite(losses_arr)
+                    if np.sum(positive_mask) < 2:
+                        continue
+
+                    seed_costs_pos = seed_costs[positive_mask]
+                    losses_pos = losses_arr[positive_mask]
+
+                    true_flops = np.asarray(cast(dict[str, list], true_pareto_info).get("flops", []), dtype=float)
+                    true_losses_arr = np.asarray(cast(dict[str, list], true_pareto_info).get("loss", []), dtype=float)
+                    true_valid = np.isfinite(true_flops) & np.isfinite(true_losses_arr)
+                    true_flops = true_flops[true_valid]
+                    true_losses_arr = true_losses_arr[true_valid]
+                    sort_idx = np.argsort(true_flops)
+                    true_flops = true_flops[sort_idx]
+                    true_losses_arr = true_losses_arr[sort_idx]
+
+                    true_positive_mask = true_flops > 1e-8
+                    seed_metric_flops = np.log10(np.maximum(seed_costs_pos, 1.0))
+                    true_metric_flops = np.log10(np.maximum(true_flops[true_positive_mask], 1.0))
+                    true_losses_metric = true_losses_arr[true_positive_mask]
+
+                    if len(seed_metric_flops) < 2 or len(true_metric_flops) < 2:
+                        continue
+
+                    true_pareto_losses_at_seed_flops = np.interp(
+                        seed_metric_flops,
+                        true_metric_flops,
+                        true_losses_metric
+                    )
+
+                    excess_loss = np.abs(losses_pos - true_pareto_losses_at_seed_flops)
+
+                    raw_compute_weights = seed_costs_pos
+
+                    weighted_errors = raw_compute_weights * excess_loss
+                    cumsum_weighted_errors = np.cumsum(weighted_errors)
+                    cumsum_compute = np.cumsum(raw_compute_weights)
+
+                    # 4. Final CWEL Calculation
+                    cwel_values = cumsum_weighted_errors / np.maximum(cumsum_compute, 1e-10)
+
+                    res = (seed_costs_pos.tolist(), cwel_values.tolist())
+                else:  # pareto_area
                     res = ScalingLawGuidedOptimizer.compute_normalized_pareto_line_area_to_true(
                         np.asarray(losses, dtype=float).tolist(),
                         seed_costs.tolist(),
@@ -1174,6 +1223,7 @@ def calculate_pareto_line_areas_to_true(
                 true_pareto_info=true_pareto_info,
                 global_loss_bounds=loss_bounds,
                 global_flops_bounds=hv_flops_bounds,
+                log_loss_scale=True,
             )
             if res is None:
                 continue
@@ -1215,6 +1265,150 @@ def calculate_pareto_line_areas_to_true(
         }
 
     return area_dict
+
+
+def calculate_cwel(
+    *,
+    base_path: str | Path,
+    optimizers: dict[str, list[int | str]],
+    true_pareto_info: dict[str, list],
+    key_to_extract: str | None = None,
+    loss_key: str = "objective_to_minimize",
+    log_scale: bool = False,
+    flop_range: tuple[float, float] | None = None,
+) -> dict[str, dict]:
+    """
+    Calculate Cumulative Weighted Error Loss (CWEL) over flops.
+    
+    CWEL = sum(flop[i] * abs(loss[i] - true_pareto_loss[i])) / cumulative_flops
+    
+    This metric measures how far the current trajectory deviates from the true pareto front,
+    weighted by the FLOPs spent at that point.
+    """
+    all_flop_grids: list[np.ndarray] = []
+    all_per_seed_data: dict[str, dict[str, Any]] = {}
+    
+    # Extract true pareto data for interpolation
+    true_flops = np.asarray(true_pareto_info.get("flops", []), dtype=float)
+    true_losses = np.asarray(true_pareto_info.get("loss", []), dtype=float)
+    true_valid = np.isfinite(true_flops) & np.isfinite(true_losses)
+    
+    if not np.any(true_valid):
+        return {}
+    
+    true_flops = true_flops[true_valid]
+    true_losses = true_losses[true_valid]
+    # Sort by flops for interpolation
+    sort_idx = np.argsort(true_flops)
+    true_flops = true_flops[sort_idx]
+    true_losses = true_losses[sort_idx]
+
+    for opt_name, seeds in optimizers.items():
+        raw_flop_grid, per_seed_losses, per_seed_costs = process_optimizer_per_seed(
+            base_path=base_path,
+            optimizer_name=opt_name,
+            seeds=seeds,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            log_scale=log_scale,
+            interpolate=False,
+            flop_range=flop_range,
+            return_incumbent=False,
+        )
+        max_cost = max((float(np.max(costs)) for costs in per_seed_costs.values() if len(costs) > 0), default=0.0)
+        positive_min = min(
+            (float(np.min(costs[costs > 1e-8])) for costs in per_seed_costs.values() if np.any(costs > 1e-8)),
+            default=0.0,
+        )
+        if log_scale and positive_min > 0 and max_cost > positive_min:
+            flop_grid = np.logspace(np.log10(positive_min), np.log10(max_cost), num=100)
+        else:
+            flop_grid = np.linspace(0.0, max_cost, num=100)
+
+        all_per_seed_data[opt_name] = {
+            "flop_grid": flop_grid,
+            "per_seed_losses": per_seed_losses,
+            "per_seed_costs": per_seed_costs,
+        }
+        for seed_costs in per_seed_costs.values():
+            if len(seed_costs) > 0:
+                all_flop_grids.append(np.asarray(seed_costs, dtype=float))
+        if not per_seed_costs and len(raw_flop_grid) > 0:
+            all_flop_grids.append(raw_flop_grid)
+        elif not per_seed_costs and len(flop_grid) > 0:
+            all_flop_grids.append(flop_grid)
+
+    bounds = _get_global_flop_bounds(all_flop_grids)
+    cwel_dict: dict[str, dict[str, np.ndarray]] = {}
+
+    for opt_name, data in all_per_seed_data.items():
+        flop_grid = data["flop_grid"]
+        per_seed_losses = data["per_seed_losses"]
+        per_seed_costs = data["per_seed_costs"]
+
+        seed_cwel_list = []
+        for seed, losses in per_seed_losses.items():
+            seed_costs = np.asarray(per_seed_costs[seed], dtype=float)
+            losses_arr = np.asarray(losses, dtype=float)
+            
+            # Skip if no valid data
+            if len(seed_costs) == 0 or len(losses_arr) == 0:
+                continue
+            
+            # Interpolate true pareto loss at each seed flop point
+            positive_mask = np.isfinite(seed_costs) & (seed_costs > 1e-8) & np.isfinite(losses_arr)
+            true_positive_mask = true_flops > 1e-8
+            if np.sum(positive_mask) < 2 or np.sum(true_positive_mask) < 2:
+                continue
+
+            metric_costs = seed_costs[positive_mask]
+            seed_metric_flops = np.log10(np.maximum(metric_costs, 1.0))
+            losses_arr = losses_arr[positive_mask]
+            true_metric_flops = np.log10(np.maximum(true_flops[true_positive_mask], 1.0))
+            true_metric_losses = true_losses[true_positive_mask]
+            true_pareto_losses_at_seed_flops = np.interp(
+                seed_metric_flops,
+                true_metric_flops,
+                true_metric_losses,
+                left=np.nan,
+                right=np.nan,
+            )
+            weighted_errors = metric_costs * np.abs(losses_arr - true_pareto_losses_at_seed_flops)
+            cumsum_weighted_errors = np.cumsum(weighted_errors)
+            cumsum_flops = np.cumsum(metric_costs)
+            cwel_values = cumsum_weighted_errors / np.maximum(cumsum_flops, 1e-10)
+            seed_costs = metric_costs
+            
+            # Interpolate to flop_grid
+            if len(seed_costs) > 0 and np.any(np.isfinite(cwel_values)):
+                valid_mask = np.isfinite(cwel_values)
+                if np.any(valid_mask):
+                    valid_costs = seed_costs[valid_mask]
+                    valid_cwel = cwel_values[valid_mask]
+                    seed_cwel = np.interp(
+                        flop_grid, valid_costs, valid_cwel,
+                        left=np.nan, right=valid_cwel[-1]
+                    )
+                    seed_cwel_list.append(seed_cwel)
+
+        if not seed_cwel_list:
+            continue
+
+        seed_cwel_array = np.asarray(seed_cwel_list, dtype=float)
+        mean_cwels = np.nanmean(seed_cwel_array, axis=0)
+        std_cwels = np.nanstd(seed_cwel_array, axis=0)
+        valid_counts = np.maximum(np.sum(np.isfinite(seed_cwel_array), axis=0), 1)
+        se_cwels = std_cwels / np.sqrt(valid_counts)
+
+        cwel_dict[opt_name] = {
+            "flop_counts": flop_grid,
+            "norm_flops": _normalize_flop_counts(flop_grid, bounds[0], bounds[1]) if bounds is not None else flop_grid,
+            "mean_cwels": mean_cwels.astype(float),
+            "std_cwels": se_cwels.astype(float),
+        }
+
+    return cwel_dict
+
 
 
 def calculate_pareto_fronts(
@@ -3238,7 +3432,7 @@ def plot_pareto_line_area_to_true_over_flops(
                 figsize=figsize,
                 title=f"{title} (with priors)",
                 xlabel="Normalized FLOPs" if normalize_flops else "Cumulative FLOPs",
-                ylabel="Pareto Fit Area",
+                ylabel="PER",
             )
 
         if without_priors:
@@ -3260,7 +3454,7 @@ def plot_pareto_line_area_to_true_over_flops(
                 figsize=figsize,
                 title=f"{title} (without priors)",
                 xlabel="Normalized FLOPs" if normalize_flops else "Cumulative FLOPs",
-                ylabel="Pareto Fit Area",
+                ylabel="PER",
             )
 
         return (fig_all, ax_all), (fig_with, ax_with), (fig_without, ax_without)
@@ -3339,7 +3533,199 @@ def plot_pareto_line_area_to_true_over_flops(
         ax.fill_between(flop_counts, lower, upper, alpha=0.2, color=color)
 
     ax.set_xlabel("Normalized FLOPs" if normalize_flops else "Cumulative FLOPs", fontsize=20)
-    ax.set_ylabel("Pareto Fit Area", fontsize=20)
+    ax.set_ylabel("PER", fontsize=20)
+    if effective_flop_range is not None:
+        ax.set_xlim(effective_flop_range[0], effective_flop_range[1])
+    elif normalize_flops:
+        left, right = _get_common_xlim(x_series_for_limits)
+        ax.set_xlim(left, right)
+    if not normalize_flops:
+        ax.set_xscale("log")
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+    ax.autoscale(enable=True, axis='y', tight=True)
+
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.2),
+               ncol=min(4, len(optimizers)), fontsize=20, frameon=True)
+    plt.tight_layout(rect=[0, 0.10, 1, 1])
+    return fig, ax
+
+
+def plot_cwel(
+    *,
+    base_path: str | Path,
+    optimizers: dict[str, list[int]] | dict[str, list[int | str]],
+    true_pareto_info: dict[str, list],
+    key_to_extract: str | None = None,
+    loss_key: str = "objective_to_minimize",
+    log_scale: bool = False,
+    figsize: tuple[int, int] = (5.5, 3.5),
+    title: str = "Cumulative Weighted Error Loss Over Optimization",
+    flop_range: tuple[float, float] | None = None,
+    normalize_flops: bool = True,
+    return_split: bool = True,
+) -> Any:
+    """
+    Plot Cumulative Weighted Error Loss (CWEL) over flops.
+    
+    CWEL measures how far the current trajectory deviates from the true pareto front,
+    weighted by the FLOPs spent at that point.
+    
+    Args:
+        base_path: Base path where optimizer directories are located
+        optimizers: Dict mapping optimizer name to list of seeds
+        true_pareto_info: Dict with "flops" and "loss" keys containing true pareto data
+        key_to_extract: Key to extract from results as cost
+        loss_key: Key for loss/objective value
+        log_scale: Whether to use log scale for x-axis
+        figsize: Figure size
+        title: Plot title
+        flop_range: Tuple (min_flops, max_flops) to display on x-axis
+        normalize_flops: Whether to normalize flops to [0, 1]
+        return_split: Whether to split by priors (with/without)
+    
+    Returns:
+        fig: Matplotlib figure (or tuple of figs if return_split=True)
+        ax: Axes object (or tuple of axes if return_split=True)
+    """
+    if return_split:
+        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
+
+        fig_all, ax_all = cast(tuple[Any, Any], plot_cwel(
+            base_path=base_path,
+            optimizers=all_opts,
+            true_pareto_info=true_pareto_info,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            log_scale=log_scale,
+            figsize=figsize,
+            title=title,
+            flop_range=flop_range,
+            normalize_flops=normalize_flops,
+            return_split=False,
+        ))
+
+        if with_priors:
+            fig_with, ax_with = cast(tuple[Any, Any], plot_cwel(
+                base_path=base_path,
+                optimizers=with_priors,
+                true_pareto_info=true_pareto_info,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                log_scale=log_scale,
+                figsize=figsize,
+                title=f"{title} (with priors)",
+                flop_range=flop_range,
+                normalize_flops=normalize_flops,
+                return_split=False,
+            ))
+        else:
+            fig_with, ax_with = _placeholder_plot(
+                figsize=figsize,
+                title=f"{title} (with priors)",
+                xlabel="Normalized FLOPs" if normalize_flops else "Cumulative FLOPs",
+                ylabel="CWEL",
+            )
+
+        if without_priors:
+            fig_without, ax_without = cast(tuple[Any, Any], plot_cwel(
+                base_path=base_path,
+                optimizers=without_priors,
+                true_pareto_info=true_pareto_info,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                log_scale=log_scale,
+                figsize=figsize,
+                title=f"{title} (without priors)",
+                flop_range=flop_range,
+                normalize_flops=normalize_flops,
+                return_split=False,
+            ))
+        else:
+            fig_without, ax_without = _placeholder_plot(
+                figsize=figsize,
+                title=f"{title} (without priors)",
+                xlabel="Normalized FLOPs" if normalize_flops else "Cumulative FLOPs",
+                ylabel="CWEL",
+            )
+
+        return (fig_all, ax_all), (fig_with, ax_with), (fig_without, ax_without)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    normalized_range = (
+        flop_range is not None
+        and 0.0 <= flop_range[0] <= 1.0
+        and 0.0 <= flop_range[1] <= 1.0
+    )
+    effective_flop_range = flop_range if (not normalize_flops or normalized_range) else None
+    cwel_data = calculate_cwel(
+        base_path=base_path,
+        optimizers=optimizers,
+        true_pareto_info=true_pareto_info,
+        key_to_extract=key_to_extract,
+        loss_key=loss_key,
+        log_scale=log_scale,
+        flop_range=flop_range,
+    )
+
+    all_data = []
+    all_first_flops = []
+    for opt_name, data in cwel_data.items():
+        flop_counts = data["norm_flops"] if normalize_flops else data["flop_counts"]
+        mean_cwels = data["mean_cwels"]
+        std_cwels = data["std_cwels"]
+
+        if effective_flop_range is not None:
+            min_flops, max_flops = effective_flop_range
+            mask = (flop_counts >= min_flops) & (flop_counts <= max_flops)
+            flop_counts = flop_counts[mask]
+            mean_cwels = mean_cwels[mask]
+            std_cwels = std_cwels[mask]
+
+        if len(flop_counts) == 0:
+            continue
+        all_data.append({
+            "opt_name": opt_name,
+            "flop_counts": flop_counts,
+            "mean_cwels": mean_cwels,
+            "std_cwels": std_cwels,
+        })
+        non_zero_flops = flop_counts[flop_counts > 1e-8]
+        if len(non_zero_flops) > 0:
+            all_first_flops.append(non_zero_flops[0])
+
+    common_start = max(all_first_flops) if all_first_flops else 0.0
+    x_series_for_limits: list[np.ndarray] = []
+    for data in all_data:
+        flop_counts = data["flop_counts"]
+        mean_cwels = data["mean_cwels"]
+        std_cwels = data["std_cwels"]
+
+        mask = flop_counts >= common_start - 1e-8
+        flop_counts = flop_counts[mask]
+        mean_cwels = mean_cwels[mask]
+        std_cwels = std_cwels[mask]
+        if len(flop_counts) == 0:
+            continue
+
+        x_series_for_limits.append(flop_counts)
+        color = get_optimizer_color(data["opt_name"])
+        linestyle = get_optimizer_linestyle(data["opt_name"])
+        ax.plot(
+            flop_counts,
+            mean_cwels,
+            label=get_optimizer_label(data["opt_name"]),
+            color=color,
+            linestyle=linestyle,
+            linewidth=2.5,
+        )
+        lower = np.maximum(mean_cwels - std_cwels, 0.0)
+        upper = mean_cwels + std_cwels
+        ax.fill_between(flop_counts, lower, upper, alpha=0.2, color=color)
+
+    ax.set_xlabel("Normalized FLOPs" if normalize_flops else "Cumulative FLOPs", fontsize=20)
+    ax.set_ylabel("CWEL", fontsize=20)
     if effective_flop_range is not None:
         ax.set_xlim(effective_flop_range[0], effective_flop_range[1])
     elif normalize_flops:
@@ -3501,6 +3887,7 @@ def plot_optimizer_rankings_across_benchmarks(
     optimizers: dict[str, list[int]] | dict[str, list[int | str]],
     key_to_extract: str | None = None,
     loss_key: str = "objective_to_minimize",
+    log_scale: bool = False,
     figsize: tuple[int, int] = (5.5, 3.5),
     title: str = "Optimizer Rankings Across Benchmarks",
     return_split: bool = True,
@@ -3535,6 +3922,7 @@ def plot_optimizer_rankings_across_benchmarks(
             optimizers=all_opts,
             key_to_extract=key_to_extract,
             loss_key=loss_key,
+            log_scale=log_scale,
             figsize=figsize,
             title=title,
             return_split=False,
@@ -3550,6 +3938,7 @@ def plot_optimizer_rankings_across_benchmarks(
                 optimizers=with_priors,
                 key_to_extract=key_to_extract,
                 loss_key=loss_key,
+                log_scale=log_scale,
                 figsize=figsize,
                 title=f"{title} (with priors)",
                 return_split=False,
@@ -3572,6 +3961,7 @@ def plot_optimizer_rankings_across_benchmarks(
                 optimizers=without_priors,
                 key_to_extract=key_to_extract,
                 loss_key=loss_key,
+                log_scale=log_scale,
                 figsize=figsize,
                 title=f"{title} (without priors)",
                 return_split=False,
@@ -3605,7 +3995,7 @@ def plot_optimizer_rankings_across_benchmarks(
                 optimizers=optimizers,
                 key_to_extract=key_to_extract,
                 loss_key=loss_key,
-                log_scale=False,
+                log_scale=log_scale,
                 ranking_metric=ranking_metric,
                 flop_range=flop_ranges_per_benchmark.get(benchmark_name) if flop_ranges_per_benchmark else None,
                 true_pareto_info=(
@@ -3856,6 +4246,199 @@ def plot_loss_composite_across_benchmarks(
                    ha="center", va="center", transform=agg_ax.transAxes)
 
     axes[0].set_xlim(0.0, 1.0)
+    
+    # Remove individual legends
+    for ax in axes:
+        if ax.get_legend() is not None:
+            ax.get_legend().remove()
+    
+    # Add single shared legend at bottom
+    if shared_handles and shared_labels:
+        fig.legend(shared_handles, shared_labels, loc='lower center', bbox_to_anchor=(0.5, -0.2),
+                  ncol=min(4, len(optimizers)), fontsize=20, frameon=True)
+    
+    plt.tight_layout(rect=[0, 0.05, 1, 1])
+    for j in range(num_subplots, len(axes)):
+        axes[j].axis('off')
+    return fig, axes
+
+
+def plot_cwel_composite_across_benchmarks(
+    *,
+    base_path: Path,
+    benchmarks: list[str],
+    optimizers: dict[str, list[int]] | dict[str, list[int | str]],
+    true_pareto_info_per_benchmark: dict[str, dict],
+    key_to_extract: str | None = None,
+    loss_key: str = "objective_to_minimize",
+    flop_ranges_per_benchmark: dict[str, tuple[float, float]] | None = None,
+    return_split: bool = True,
+) -> Any:
+    """
+    Create composite CWEL figures with all benchmarks + across-benchmark aggregate ranking.
+    
+    Similar to plot_loss_composite_across_benchmarks but uses plot_cwel for each benchmark
+    and ranks optimizers by CWEL values (lower is better).
+    
+    Args:
+        base_path: Base path where benchmark optimizer directories are located
+        benchmarks: List of benchmark names
+        optimizers: Dict mapping optimizer name to list of seeds
+        true_pareto_info_per_benchmark: Dict mapping benchmark -> pareto info dict
+        key_to_extract: Key to extract from results as cost
+        loss_key: Loss metric key
+        flop_ranges_per_benchmark: Optional per-benchmark flop ranges for plotting
+        return_split: If True, returns 3 figures (all/with_priors/without_priors)
+    
+    Returns:
+        If return_split=True: tuple of 3 figures
+        If return_split=False: single figure (fig, axes)
+    """
+    if return_split:
+        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
+
+        result_all = cast(tuple[Any, Any], plot_cwel_composite_across_benchmarks(
+            base_path=base_path,
+            benchmarks=benchmarks,
+            optimizers=all_opts,
+            true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            flop_ranges_per_benchmark=flop_ranges_per_benchmark,
+            return_split=False,
+        ))
+
+        if with_priors:
+            result_with = cast(tuple[Any, Any], plot_cwel_composite_across_benchmarks(
+                base_path=base_path,
+                benchmarks=benchmarks,
+                optimizers=with_priors,
+                true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                flop_ranges_per_benchmark=flop_ranges_per_benchmark,
+                return_split=False,
+            ))
+        else:
+            fig_with, ax_with = plt.subplots(figsize=(5.5, 3.5 * (len(benchmarks) + 1)))
+            ax_with.text(0.5, 0.5, "No optimizers in with_priors group", 
+                        ha="center", va="center", transform=ax_with.transAxes)
+            result_with = (fig_with, ax_with)
+
+        if without_priors:
+            result_without = cast(tuple[Any, Any], plot_cwel_composite_across_benchmarks(
+                base_path=base_path,
+                benchmarks=benchmarks,
+                optimizers=without_priors,
+                true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                flop_ranges_per_benchmark=flop_ranges_per_benchmark,
+                return_split=False,
+            ))
+        else:
+            fig_without, ax_without = plt.subplots(figsize=(5.5, 3.5 * (len(benchmarks) + 1)))
+            ax_without.text(0.5, 0.5, "No optimizers in without_priors group",
+                           ha="center", va="center", transform=ax_without.transAxes)
+            result_without = (fig_without, ax_without)
+
+        return result_all, result_with, result_without
+
+    # Create composite figure with subplots for each benchmark + aggregate
+    num_subplots = len(benchmarks) + 1
+    cols = num_subplots
+    figsize = (6 * cols, 4)
+    fig, axes = plt.subplots(1, num_subplots, figsize=figsize)
+    if num_subplots == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+    
+    # Collect handles/labels for shared legend
+    shared_handles = None
+    shared_labels = None
+    # Plot CWEL for each benchmark
+    for idx, benchmark_name in enumerate(benchmarks):
+        ax = axes[idx + 1]
+        try:
+            benchmark_path = base_path / benchmark_name
+            
+            # Call plot_cwel (with return_split=False to get single figure)
+            letter = string.ascii_lowercase[idx + 1]
+            fig_bench, ax_bench = cast(tuple[Any, Any], plot_cwel(
+                base_path=benchmark_path,
+                optimizers=optimizers,
+                true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                log_scale=False,
+                figsize=(5.5, 3.5),
+                title="",
+                flop_range=flop_ranges_per_benchmark[benchmark_name] if flop_ranges_per_benchmark else None,
+                normalize_flops=False,
+                return_split=False,
+            ))
+            ax.set_title(f"({letter}) {benchmark_name}", loc='left', fontsize=20)
+            
+            # Re-plot line data instead of reusing artists from another figure.
+            _replot_lines(ax_bench, ax)
+            
+            # Copy axis properties
+            ax.set_ylim(ax_bench.get_ylim())
+            ax.set_xlim(ax_bench.get_xlim())
+            ax.set_xlabel(ax_bench.get_xlabel())
+            ax.set_ylabel(ax_bench.get_ylabel())
+            ax.set_xscale(ax_bench.get_xscale())
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+            
+            # Collect legend handles/labels from first benchmark
+            if idx == 0:
+                shared_handles, shared_labels = ax_bench.get_legend_handles_labels()
+            
+            plt.close(fig_bench)
+            
+        except Exception as e:
+            print(f"Warning: Could not plot CWEL for {benchmark_name}: {e}")
+            ax.text(0.5, 0.5, f"Error plotting {benchmark_name}", 
+                   ha="center", va="center", transform=ax.transAxes)
+    
+    # Plot across-benchmark aggregate ranking (by CWEL, lower is better) in first subplot
+    agg_ax = axes[0]
+    try:
+        # Call ranking plot function with "cwel" metric for aggregate
+        fig_agg, ax_agg = cast(tuple[Any, Any], plot_optimizer_rankings_across_benchmarks(
+            base_path=base_path,
+            benchmarks=benchmarks,
+            optimizers=optimizers,
+            key_to_extract=key_to_extract,
+            loss_key=loss_key,
+            log_scale=False,
+            title="",
+            figsize=(5.5, 3.5),
+            return_split=False,
+            ranking_metric="cwel",
+            flop_ranges_per_benchmark=flop_ranges_per_benchmark,
+            true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
+        ))
+        title="Across Benchmarks (CWEL)"
+        
+        # Re-plot line data instead of reusing artists from another figure.
+        _replot_lines(ax_agg, agg_ax)
+        
+        # Copy axis properties
+        agg_ax.set_ylim(ax_agg.get_ylim())
+        agg_ax.set_xlabel(ax_agg.get_xlabel())
+        agg_ax.set_ylabel(ax_agg.get_ylabel())
+        agg_ax.set_title(f"({string.ascii_lowercase[0]}) {title}", loc='left', fontsize=20)
+        agg_ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+        plt.close(fig_agg)
+        
+    except Exception as e:
+        print(f"Warning: Could not plot aggregate CWEL ranking: {e}")
+        agg_ax.text(0.5, 0.5, f"Error plotting aggregate", 
+                   ha="center", va="center", transform=agg_ax.transAxes)
+
+    agg_ax.set_xlim(0.0, 1.0)
     
     # Remove individual legends
     for ax in axes:
@@ -4880,7 +5463,8 @@ if __name__ == "__main__":
         BenchmarkEnum.LLM.value,
         # BenchmarkEnum.TABPFN.value,
     ]
-    pareto_merged = {}
+    pareto_merged_5x = {}
+    pareto_merged_1x = {}
     predicted_loss_merged = defaultdict(dict)
     avg_predicted_loss_merged = defaultdict(dict)
     predicted_params_merged = defaultdict(dict)
@@ -4890,7 +5474,7 @@ if __name__ == "__main__":
 
 
     for benchmark_name in benchmarks:
-        continue
+        # continue
         print(f"\n{'='*60}")
         print(f"Generating plots for: {benchmark_name}")
         print(f"{'='*60}")
@@ -4916,35 +5500,52 @@ if __name__ == "__main__":
         
         print(f"  Plotting pareto front loss...")
         # (fig_pareto_all, _), (fig_pareto_with, _), (fig_pareto_without, _) = plot_pareto_front_over_flops(
-        # selected_seed = selected_best_seed_per_benchmark[benchmark_name]
-        # for seed in all_seeds:
-        #     (fig_pareto_all, ax) = plot_pareto_front_over_flops(
-        #         base_path=results_dir / benchmark_name,
-        #         optimizers={k: [seed] for k in optimizers_dict.keys()},
-        #         key_to_extract="cost",
-        #         log_scale=False,
-        #         loss_key=loss_key,
-        #         title=f"{BENCHMARK_TITLES[benchmark_name]}",
-        #         flop_range=flop_range_to_show_in_pareto_per_benchmark[benchmark_name],
-        #         # pareto_acc_flop_ranges=acc_flop_ranges_per_benchmark[benchmark_name],
-        #         true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-        #         # pareto_target_flop=target_flop_per_benchmark[benchmark_name],
-        #         return_split=False,
-        #         # selected_seed=seed,
-        #     )
-        #     if seed == selected_seed:
-        #         pareto_merged[BENCHMARK_TITLES[benchmark_name]] = (fig_pareto_all, ax)
-        #     output_path = plot_output_dir / f"pareto_front_all_{seed}.pdf"
-        #     fig_pareto_all.savefig(output_path, dpi=300, bbox_inches="tight")
-        #     # fig_pareto_with.savefig(plot_output_dir / f"pareto_front_with_priors_{seed}.pdf", dpi=300, bbox_inches="tight")
-        #     # fig_pareto_without.savefig(plot_output_dir / f"pareto_front_without_priors_{seed}.pdf", dpi=300, bbox_inches="tight")
-        #     plt.close(fig_pareto_all)
-        #     # plt.close(fig_pareto_with)
-        #     # plt.close(fig_pareto_without)
-        #     print(f"    ✓ Saved: {output_path}")
-        #     # print(f"    ✓ Saved: {plot_output_dir / 'pareto_front_with_priors.pdf'}")
-        #     # print(f"    ✓ Saved: {plot_output_dir / 'pareto_front_without_priors.pdf'}")
-        
+        selected_seed = selected_best_seed_per_benchmark[benchmark_name]
+        for seed in all_seeds:
+            (fig_pareto_all, ax) = plot_pareto_front_over_flops(
+                base_path=results_dir / benchmark_name,
+                optimizers={k: [seed] for k in optimizers_dict.keys()},
+                key_to_extract="cost",
+                log_scale=False,
+                loss_key=loss_key,
+                title=f"{BENCHMARK_TITLES[benchmark_name]}",
+                flop_range=flop_range_to_show_in_pareto_per_benchmark[benchmark_name],
+                # pareto_acc_flop_ranges=acc_flop_ranges_per_benchmark[benchmark_name],
+                true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                # pareto_target_flop=target_flop_per_benchmark[benchmark_name],
+                return_split=False,
+                # selected_seed=seed,
+            )
+            if seed == selected_seed:
+                rng = flop_range_to_show_in_pareto_per_benchmark[benchmark_name]
+                flp_rng = acc_flop_ranges_per_benchmark[benchmark_name]
+                pareto_merged_5x[BENCHMARK_TITLES[benchmark_name]] = (fig_pareto_all, ax)
+                (fig_pareto_all_1x, ax_1x) = plot_pareto_front_over_flops(
+                    base_path=results_dir / benchmark_name,
+                    optimizers={k: [seed] for k in optimizers_dict.keys()},
+                    key_to_extract="cost",
+                    log_scale=False,
+                    loss_key=loss_key,
+                    title=f"{BENCHMARK_TITLES[benchmark_name]}",
+                    flop_range=flop_range_to_show_in_pareto_per_benchmark[benchmark_name],
+                    pareto_acc_flop_ranges=(rng[0], rng[1] * 1),
+                    true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                    # pareto_target_flop=target_flop_per_benchmark[benchmark_name],
+                    return_split=False,
+                    # selected_seed=seed,
+                )
+                pareto_merged_1x[BENCHMARK_TITLES[benchmark_name]] = (fig_pareto_all_1x, ax_1x)
+            output_path = plot_output_dir / f"pareto_front_all_{seed}.pdf"
+            fig_pareto_all.savefig(output_path, dpi=300, bbox_inches="tight")
+            # fig_pareto_with.savefig(plot_output_dir / f"pareto_front_with_priors_{seed}.pdf", dpi=300, bbox_inches="tight")
+            # fig_pareto_without.savefig(plot_output_dir / f"pareto_front_without_priors_{seed}.pdf", dpi=300, bbox_inches="tight")
+            plt.close(fig_pareto_all)
+            # plt.close(fig_pareto_with)
+            # plt.close(fig_pareto_without)
+            print(f"    ✓ Saved: {output_path}")
+            # print(f"    ✓ Saved: {plot_output_dir / 'pareto_front_with_priors.pdf'}")
+            # print(f"    ✓ Saved: {plot_output_dir / 'pareto_front_without_priors.pdf'}")
+        continue
         target_flop = target_flop_per_benchmark[benchmark_name]
 
         # for predictor_type in [
@@ -4996,7 +5597,7 @@ if __name__ == "__main__":
         #                 fig_pred_all.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_all_{seed}_{target_flop:.2e}.pdf", dpi=300, bbox_inches="tight")
         #                 plt.close(fig_pred_all)
         #                 print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_all_{seed}_{target_flop:.2e}.pdf'}")
-        
+        # continue
         for predictor_type in [
             ScaleParamPredictorTypes.CHINCHILLA3, 
             ScaleParamPredictorTypes.POWER_LAW_FIT
@@ -5103,26 +5704,32 @@ if __name__ == "__main__":
     plots_dir.mkdir(parents=True, exist_ok=True)
 
 
-    from src.plotting.utils import merge_pareto_plots
+    from src.plotting.utils import merge_pareto_plots, merge_split_composite_plots
 
     
-    # pareto_master_fig, _ = merge_pareto_plots(pareto_merged)
-    # pareto_master_fig.savefig(plots_dir / "selected_pareto_composite_all.pdf", dpi=300, bbox_inches="tight")
-    # plt.close(pareto_master_fig)
-    # print(f"✓ Saved: {plots_dir / 'selected_pareto_composite_all.pdf'}")
-    # for optimizer in loss_predictor_comparison_merged:
-    #     opt_comparision = loss_predictor_comparison_merged[optimizer]
-    #     loss_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
-    #     loss_predictor_comp_master_fig.savefig(plots_dir / f"loss_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
-    #     plt.close(loss_predictor_comp_master_fig)
-    #     print(f"✓ Saved: {plots_dir / f'loss_predictor_comparison_{optimizer}_composite_all.pdf'}")
+    pareto_master_fig, _ = merge_pareto_plots(pareto_merged_5x)
+    pareto_master_fig.savefig(plots_dir / "selected_pareto_composite_all.pdf", dpi=300, bbox_inches="tight")
+    plt.close(pareto_master_fig)
+    print(f"✓ Saved: {plots_dir / 'selected_pareto_composite_all.pdf'}")
+    pareto_master_fig_1x, _ = merge_pareto_plots(pareto_merged_1x)
+    pareto_master_fig_1x.savefig(plots_dir / "selected_pareto_composite_all_1x.pdf", dpi=300, bbox_inches="tight")
+    plt.close(pareto_master_fig_1x)
+    print(f"✓ Saved: {plots_dir / 'selected_pareto_composite_all_1x.pdf'}")
+    raise Exception("errr")
+    for optimizer in loss_predictor_comparison_merged:
+        opt_comparision = loss_predictor_comparison_merged[optimizer]
+        loss_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
+        loss_predictor_comp_master_fig.savefig(plots_dir / f"loss_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
+        plt.close(loss_predictor_comp_master_fig)
+        print(f"✓ Saved: {plots_dir / f'loss_predictor_comparison_{optimizer}_composite_all.pdf'}")
+    
 
-    # for optimizer in n_param_predictor_comparison_merged:
-    #     opt_comparision = n_param_predictor_comparison_merged[optimizer]
-    #     n_param_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
-    #     n_param_predictor_comp_master_fig.savefig(plots_dir / f"n_param_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
-    #     plt.close(n_param_predictor_comp_master_fig)
-    #     print(f"✓ Saved: {plots_dir / f'n_param_predictor_comparison_{optimizer}_composite_all.pdf'}")
+    for optimizer in n_param_predictor_comparison_merged:
+        opt_comparision = n_param_predictor_comparison_merged[optimizer]
+        n_param_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
+        n_param_predictor_comp_master_fig.savefig(plots_dir / f"n_param_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
+        plt.close(n_param_predictor_comp_master_fig)
+        print(f"✓ Saved: {plots_dir / f'n_param_predictor_comparison_{optimizer}_composite_all.pdf'}")
 
     # for pred_type in avg_predicted_loss_merged:
     #     res = avg_predicted_loss_merged[pred_type]
@@ -5138,19 +5745,19 @@ if __name__ == "__main__":
     #     plt.close(pred_loss_master_fig)
     #     print(f"✓ Saved: {plots_dir / f'{pred_type}_predicted_loss_composite_all.pdf'}")
 
-    # for pred_type in avg_predicted_params_merged:
-    #     res = avg_predicted_params_merged[pred_type]
-    #     avg_pred_loss_master_fig, _ = merge_pareto_plots(res)
-    #     avg_pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_avg_predicted_params_composite_all.pdf", dpi=300, bbox_inches="tight")
-    #     plt.close(avg_pred_loss_master_fig)
-    #     print(f"✓ Saved: {plots_dir / f'{pred_type}_avg_predicted_params_composite_all.pdf'}")
+    for pred_type in avg_predicted_params_merged:
+        res = avg_predicted_params_merged[pred_type]
+        avg_pred_loss_master_fig, _ = merge_pareto_plots(res)
+        avg_pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_avg_predicted_params_composite_all.pdf", dpi=300, bbox_inches="tight")
+        plt.close(avg_pred_loss_master_fig)
+        print(f"✓ Saved: {plots_dir / f'{pred_type}_avg_predicted_params_composite_all.pdf'}")
 
-    # for pred_type in predicted_params_merged:
-    #     res = predicted_params_merged[pred_type]
-    #     pred_loss_master_fig, _ = merge_pareto_plots(res)
-    #     pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_predicted_params_composite_all.pdf", dpi=300, bbox_inches="tight")
-    #     plt.close(pred_loss_master_fig)
-    #     print(f"✓ Saved: {plots_dir / f'{pred_type}_predicted_params_composite_all.pdf'}")
+    for pred_type in predicted_params_merged:
+        res = predicted_params_merged[pred_type]
+        pred_loss_master_fig, _ = merge_pareto_plots(res)
+        pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_predicted_params_composite_all.pdf", dpi=300, bbox_inches="tight")
+        plt.close(pred_loss_master_fig)
+        print(f"✓ Saved: {plots_dir / f'{pred_type}_predicted_params_composite_all.pdf'}")
 
     # raise Exception("")
     
@@ -5217,7 +5824,7 @@ if __name__ == "__main__":
     print(f"\n{'='*60}")
     print("Generating composite loss plots across all benchmarks...")
     print(f"{'='*60}")
-    (fig_loss_comp_all, _), (fig_loss_comp_with, _), (fig_loss_comp_without, _) = plot_loss_composite_across_benchmarks(
+    (fig_loss_comp_all, axes_loss_comp_all), (fig_loss_comp_with, axes_loss_comp_with), (fig_loss_comp_without, axes_loss_comp_without) = plot_loss_composite_across_benchmarks(
         base_path=results_dir,
         benchmarks=benchmarks,
         optimizers=optimizers_dict,
@@ -5229,18 +5836,16 @@ if __name__ == "__main__":
     fig_loss_comp_without.savefig(plots_dir / "loss_composite_without_priors.pdf", dpi=300, bbox_inches="tight")
     plt.close(fig_loss_comp_all)
     plt.close(fig_loss_comp_with)
-    plt.close(fig_loss_comp_without)
     print(f"✓ Saved: {plots_dir / 'loss_composite_all.pdf'}")
     print(f"✓ Saved: {plots_dir / 'loss_composite_with_priors.pdf'}")
     print(f"✓ Saved: {plots_dir / 'loss_composite_without_priors.pdf'}")
 
-   
     # Plot: Composite hypervolume plots (all benchmarks + aggregate in single figures)
     print(f"\n{'='*60}")
     print("Generating composite hypervolume plots across all benchmarks...")
     print(f"{'='*60}")
     try:
-        (fig_hv_comp_all, _), (fig_hv_comp_with, _), (fig_hv_comp_without, _) = plot_hypervolume_composite_across_benchmarks(
+        (fig_hv_comp_all, axes_hv_comp_all), (fig_hv_comp_with, axes_hv_comp_with), (fig_hv_comp_without, axes_hv_comp_without) = plot_hypervolume_composite_across_benchmarks(
             base_path=results_dir,
             benchmarks=benchmarks,
             optimizers=optimizers_dict,
@@ -5256,7 +5861,6 @@ if __name__ == "__main__":
         fig_hv_comp_without.savefig(plots_dir / "hypervolume_composite_without_priors.pdf", dpi=300, bbox_inches="tight")
         plt.close(fig_hv_comp_all)
         plt.close(fig_hv_comp_with)
-        plt.close(fig_hv_comp_without)
         print(f"✓ Saved: {plots_dir / 'hypervolume_composite_all.pdf'}")
         print(f"✓ Saved: {plots_dir / 'hypervolume_composite_with_priors.pdf'}")
         print(f"✓ Saved: {plots_dir / 'hypervolume_composite_without_priors.pdf'}")
@@ -5264,6 +5868,8 @@ if __name__ == "__main__":
         print(f"✗ Error plotting composite hypervolume: {e}")
         import traceback
         traceback.print_exc()
+        fig_hv_comp_without = None
+        axes_hv_comp_without = None
    
    
     # Plot: Composite pareto area plots (all benchmarks + aggregate in single figures)
@@ -5271,7 +5877,7 @@ if __name__ == "__main__":
     print("Generating composite pareto area plots across all benchmarks...")
     print(f"{'='*60}")
     try:
-        (fig_pa_comp_all, _), (fig_pa_comp_with, _), (fig_pa_comp_without, _) = plot_pareto_line_area_composite_across_benchmarks(
+        (fig_pa_comp_all, axes_pa_comp_all), (fig_pa_comp_with, axes_pa_comp_with), (fig_pa_comp_without, axes_pa_comp_without) = plot_pareto_line_area_composite_across_benchmarks(
             base_path=results_dir,
             benchmarks=benchmarks,
             optimizers=optimizers_dict,
@@ -5288,7 +5894,6 @@ if __name__ == "__main__":
         fig_pa_comp_without.savefig(plots_dir / "pareto_area_composite_without_priors.pdf", dpi=300, bbox_inches="tight")
         plt.close(fig_pa_comp_all)
         plt.close(fig_pa_comp_with)
-        plt.close(fig_pa_comp_without)
         print(f"✓ Saved: {plots_dir / 'pareto_area_composite_all.pdf'}")
         print(f"✓ Saved: {plots_dir / 'pareto_area_composite_with_priors.pdf'}")
         print(f"✓ Saved: {plots_dir / 'pareto_area_composite_without_priors.pdf'}")
@@ -5296,4 +5901,29 @@ if __name__ == "__main__":
         print(f"✗ Error plotting composite pareto area: {e}")
         import traceback
         traceback.print_exc()
+        fig_pa_comp_without = None
+        axes_pa_comp_without = None
+
+    if fig_pa_comp_without is not None and fig_hv_comp_without is not None:
+        fig_without_metrics_combined, _ = merge_split_composite_plots(
+            (
+                (fig_pa_comp_without, axes_pa_comp_without),
+                (fig_hv_comp_without, axes_hv_comp_without),
+                (fig_loss_comp_without, axes_loss_comp_without),
+            ),
+            close_sources=True,
+        )
+        fig_without_metrics_combined.savefig(
+            plots_dir / "without_priors_metrics_composite.pdf",
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close(fig_without_metrics_combined)
+        print(f"✓ Saved: {plots_dir / 'without_priors_metrics_composite.pdf'}")
+    else:
+        if fig_pa_comp_without is not None:
+            plt.close(fig_pa_comp_without)
+        if fig_hv_comp_without is not None:
+            plt.close(fig_hv_comp_without)
+        plt.close(fig_loss_comp_without)
    
