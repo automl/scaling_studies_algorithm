@@ -12,10 +12,10 @@ from src.plotting.plot_styles import OPTIMIZER_COLORS
 OPTIMIZER_LABELS: dict[str, str] = {
     "random_search": "RS",
     "random_search_with_priors": "RS (with priors)",
-    "chinchilla_approach1": "Iso-Param",
-    "chinchilla_approach1_with_priors": "Iso-Param (with priors)",
-    "chinchilla_approach2": "Iso-FLOP",
-    "chinchilla_approach2_with_priors": "Iso-FLOP (with priors)",
+    "chinchilla_approach1": "Chinchilla A1",
+    "chinchilla_approach1_with_priors": "Chinchilla A1 (with priors)",
+    "chinchilla_approach2": "Chinchilla A2",
+    "chinchilla_approach2_with_priors": "Chinchilla A2 (with priors)",
     "carbs": "CARBS",
     "carbs_with_priors": "CARBS (with priors)",
 }

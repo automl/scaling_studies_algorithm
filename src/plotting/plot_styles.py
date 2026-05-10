@@ -1,25 +1,7 @@
 from __future__ import annotations
 
 
-
-MARKERS = {
-    "good-good": "o",      # Circle
-    "good-bad": "v",       # Triangle Down
-    "good-medium": ".",    # dot
-    "good": "h",           # Hexagon
-    "bad-good": "^",       # Triangle Up
-    "bad-bad": "x",        # X
-    "bad-medium": "d",     # Diamond
-    "bad": "P",            # Plus (Filled)
-    "medium-good": "p",    # Pentagon
-    "medium-bad": "*",     # Star
-    "medium-medium": "+",  # Plus
-    "medium": "8",         # Octagon
-}
-
-# Optimizer Colors for Scaling Studies (NeurIPS-friendly palette)
 OPTIMIZER_COLORS = {
-    # Bayesian Optimization variants
     "bo_space_expansion": "#0173B2",
     "bo_space_expansion_with_priors": "#0173B2",
 

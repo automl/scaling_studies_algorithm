@@ -1,7 +1,8 @@
 from pathlib import Path
 from matplotlib import pyplot as plt
 import numpy as np
-from src.plotting.plot import get_optimizer_color, get_optimizer_linestyle, process_optimizer
+from plotting.prediction_plots import get_optimizer_color, get_optimizer_linestyle
+from src.plotting.standalone_plots import process_optimizer
 from src.extrapolate import extrapolate_single
 from src.baselines.configs import OptimizerEnum
 from src.benchmarks.configs import get_benchmark

@@ -2,8 +2,8 @@
 
 #SBATCH --partition=mldlc2_cpu-epyc9655
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=6
-#SBATCH --mem-per-cpu=5G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem-per-cpu=8G
 #SBATCH --job-name=plot_n
 #SBATCH --output=/home/alipourn/scaling_studies_algorithm/logs/%x-%j.log
 #SBATCH --time=06:00:00

@@ -1,9 +1,11 @@
-from src.plotting.plot import process_seed, _extract_result_value, _format_hp_table_value
+from plotting.prediction_plots import _extract_result_value, _format_hp_table_value
+from src.plotting.standalone_plots import process_seed
 from src.loss_predictor import LossPredictorTypes, predict_loss
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, cast, Callable
 import json
+from src.benchmarks.configs import get_benchmark
 from src.plotting.plot_styles import BENCHMARK_TITLES 
 from neps.space.neps_spaces.neps_space import convert_neps_to_classic_search_space
 
@@ -65,6 +67,125 @@ plt.rcParams.update({
     "pdf.fonttype": 42,            # Ensures fonts render correctly in the final PDF
     "ps.fonttype": 42
 })
+
+
+def plot_predictor_optimizer_summary_table(
+    *,
+    base_path: str | Path,
+    optimizers: dict[str, list[int | str]],
+    target_flop: float,
+    predictor_types: list[Any],
+    evaluation_limit: float,
+    seed: int | str,
+    key_to_extract: str | None = None,
+    loss_key: str = "objective_to_minimize",
+    figsize: tuple[float, float] = (5.5, 3.5),
+    title: str = "Predicted n_param Comparison at Budget Limit",
+    true_pareto_info: dict[str, list] | None = None,
+) -> tuple[Any, Any]:
+    """
+    Generates a table:
+    Rows: Optimizers (Approaches)
+    Cols: Predictor Types
+    Cells: Predicted n_param (evaluated after evaluation_limit cumulative FLOPs)
+    """
+    from src.scale_param_predictor import predict_scale_parameters
+
+    base_path = Path(base_path)
+    opt_names = list(optimizers.keys())
+    opt_labels = [get_optimizer_label(opt) for opt in opt_names]
+    pred_labels = [p.value if hasattr(p, "value") else str(p) for p in predictor_types]
+
+    cell_text = []
+
+    best_loss_guess = get_benchmark(base_path.name, lc_aware=False).best_loss_guess
+    # Iterate through Optimizers first to create Rows
+    for opt_name, _seeds in optimizers.items():
+        row_values = []
+
+        try:
+            # Load data once per optimizer row
+            _l, _c, _m, rows, lc_rows, _cfg = process_seed(
+                path=base_path / opt_name,
+                seed=seed,
+                key_to_extract=key_to_extract,
+                loss_key=loss_key,
+                return_incumbent=False,
+            )
+
+            trial_costs = np.asarray([float(r[3]) for r in rows])
+            cum_costs = np.cumsum(trial_costs)
+            mask = cum_costs <= evaluation_limit
+            n_trials = int(np.sum(mask))
+
+            # For each predictor (Column), calculate the value
+            for p_type in predictor_types:
+                if n_trials == 0:
+                    row_values.append("N/A")
+                    continue
+
+                try:
+                    source = lc_rows[:n_trials] if len(lc_rows) > 0 else rows[:n_trials]
+                    (pred_n, _), _ = predict_scale_parameters(
+                        predictor_type=p_type,
+                        target_flop=target_flop,
+                        rows=source,
+                        best_loss_guess=best_loss_guess,
+                    )
+                    row_values.append(_format_hp_table_value(pred_n))
+                except Exception:
+                    row_values.append("Err")
+
+        except Exception:
+            row_values = ["Data Err"] * len(predictor_types)
+
+        cell_text.append(row_values)
+
+    has_true_pareto_row = False
+    if true_pareto_info is not None:
+        true_flops = np.asarray(true_pareto_info.get("flops", []), dtype=float)
+        true_n_params = np.asarray(true_pareto_info.get("n_params", []), dtype=float)
+        valid = (true_flops > 0) & np.isfinite(true_n_params)
+        if np.any(valid):
+            idx = np.argmin(np.abs(true_flops[valid] - target_flop))
+            target_val = true_n_params[valid][idx]
+            cell_text.append([f"{target_val:.2e}"] * len(predictor_types))
+            has_true_pareto_row = True
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis("off")
+
+    table = ax.table(
+        cellText=cell_text,
+        rowLabels=opt_labels + (["True Pareto"] if has_true_pareto_row else []),
+        colLabels=pred_labels,
+        cellLoc="center",
+        loc="center",
+    )
+
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1.2, 1.8)
+
+    # NeurIPS / Academic styling
+    for (r, c), cell in table.get_celld().items():
+        cell.visible_edges = "horizontal"
+        cell.set_edgecolor("black")
+        cell.set_linewidth(0.5)
+        if r == 0:  # Column Headers (Predictors)
+            cell.set_facecolor("#f5f5f5")
+            cell.set_linewidth(1.0)  # Thicker top line
+
+    ax.set_title(
+        f"{title}\n(Snapshot at {evaluation_limit:.2e} FLOPs)",
+        fontsize=20,
+        pad=20,
+    )
+
+    plt.tight_layout()
+    return fig, ax
+
+
 def plot_predicted_hp_table_over_flops(
     *,
     base_path: str | Path,
@@ -238,12 +359,10 @@ def plot_predicted_hp_table_over_flops(
 
     cell_text: list[list[str]] = []
 
-    # We'll also write per-ratio JSON lines to base_path.parent()/plots/prediction_result.json
     out_dir = base_path.parent / "plots"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "prediction_result.json"
 
-    # Prepare a single row for this benchmark
     row_vals: list[str] = []
     for ratio in target_flop_ratios:
         ratio_target_flop = float(ratio * target_flop)
@@ -329,7 +448,6 @@ def plot_predicted_hp_table_over_flops(
             else:
                 entry["loss"][opt_name] = {"value": agg}
 
-        # append JSON line for this ratio
         try:
             import json
 
@@ -347,7 +465,6 @@ def plot_predicted_hp_table_over_flops(
 
     cell_text.append(row_vals)
 
-    # Build and return a single-table figure for this benchmark
     fig, ax = plt.subplots(figsize=(max(figsize[0], 6.0 + 1.2 * len(col_labels)), max(figsize[1], 2.0 + 0.5 * len(cell_text))))
     ax.axis("off")
     table = ax.table(
@@ -442,8 +559,6 @@ def plot_predicted_hp_table_from_json(
             return _format_table_number(value["value"])
         return _format_table_number(value)
 
-    # Matplotlib tables do not support column spanning, so the first row is a
-    # benchmark group header centered over the three ratio subcolumns.
     header_group = [""]
     header_ratio = ["Strategy"]
     for bench in bench_names:
@@ -549,19 +664,12 @@ if __name__ == "__main__":
     from src.benchmarks.configs import BenchmarkEnum
     from src.plotting.consts import results_dir, bench_confs
     from src.benchmarks.configs import BenchmarkEnum
-    from src.benchmarks.llm_space import LLM_TARGETS
-    from src.benchmarks.openclip_space import OPENCLIP_TARGETS
-    from src.benchmarks.tabpfn_space import TABPFN_TARGETS
     from src.plotting.plot_styles import BENCHMARK_TITLES
-    from src.extrapolate import load_or_generate_pareto_info
-    from src.loss_predictor import LossPredictorTypes
-    from src.scale_param_predictor import ScaleParamPredictorTypes
-    from src.benchmarks.configs import get_benchmark
     from src.plotting.consts import target_flop_per_benchmark, \
     bench_confs, true_pareto_info_per_benchmark, acc_pred_flop_ranges_per_benchmark_by_ratio,\
         hp_target_flop_ratios, \
-            selected_best_seed_per_benchmark, acc_pred_flop_ranges_per_benchmark, acc_flop_ranges_per_benchmark, \
-            all_seeds, results_dir, optimizers_dict, loss_key
+            selected_best_seed_per_benchmark, acc_pred_flop_ranges_per_benchmark, \
+            results_dir, loss_key
     benchmarks = [
         BenchmarkEnum.OPENCLIP.value, 
         BenchmarkEnum.LLM.value,
@@ -578,36 +686,36 @@ if __name__ == "__main__":
         target_flop = target_flop_per_benchmark[benchmark_name]
 
 
-        # out_file = results_dir / "plots" / "prediction_result.json"
-        # write_true_pareto_prediction_result(
-        #     out_file=out_file,
-        #     benchmark=benchmark_name,
-        #     target_flop=target_flop,
-        #     true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-        # )
-        # for hp_predictor_type in [HPPredictorTypes.LINEAR_REGRESSION]:
-            # hp_predictor_slug = hp_predictor_type.value.lower().replace(" ", "_")
-            # print(f"  Building {hp_predictor_type.value} predicted HP table at FLOP: {target_flop:.2e}...")
-            # fig_hp_all, _ = cast(tuple[Any, Any], plot_predicted_hp_table_over_flops(
-            #     base_path=results_dir / benchmark_name,
-            #     optimizers=optimizers_dict,
-            #     space=convert_neps_to_classic_search_space(benchmark_cfg.space),
-            #     evaluate_pipeline=benchmark_cfg.evaluate_pipeline,
-            #     true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-            #     target_flop=target_flop,
-            #     flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
-            #     predictor_type=hp_predictor_type,
-            #     key_to_extract="cost",
-            #     loss_key=loss_key,
-            #     title=f"{BENCHMARK_TITLES[benchmark_name]} ({hp_predictor_type.value})",
-            #     return_split=False,
-            #     target_flop_ratios=hp_target_flop_ratios,
-            #     flop_ranges_by_ratio=acc_pred_flop_ranges_per_benchmark_by_ratio[benchmark_name],
-            #     selected_seed=selected_best_seed_per_benchmark[benchmark_name],
-            # ))
-            # fig_hp_all.savefig(plot_output_dir / f"{hp_predictor_slug}_predicted_hp_table_all_{target_flop:.2e}.pdf", dpi=300, bbox_inches="tight")
-            # plt.close(fig_hp_all)
-            # print(f"    ✓ Saved: {plot_output_dir / f'{hp_predictor_slug}_predicted_hp_table_all_{target_flop:.2e}.pdf'}")
+        out_file = results_dir / "plots" / "prediction_result.json"
+        write_true_pareto_prediction_result(
+            out_file=out_file,
+            benchmark=benchmark_name,
+            target_flop=target_flop,
+            true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+        )
+        for hp_predictor_type in [HPPredictorTypes.LINEAR_REGRESSION]:
+            hp_predictor_slug = hp_predictor_type.value.lower().replace(" ", "_")
+            print(f"  Building {hp_predictor_type.value} predicted HP table at FLOP: {target_flop:.2e}...")
+            fig_hp_all, _ = cast(tuple[Any, Any], plot_predicted_hp_table_over_flops(
+                base_path=results_dir / benchmark_name,
+                optimizers=optimizers_dict,
+                space=convert_neps_to_classic_search_space(benchmark_cfg.space),
+                evaluate_pipeline=benchmark_cfg.evaluate_pipeline,
+                true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                target_flop=target_flop,
+                flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
+                predictor_type=hp_predictor_type,
+                key_to_extract="cost",
+                loss_key=loss_key,
+                title=f"{BENCHMARK_TITLES[benchmark_name]} ({hp_predictor_type.value})",
+                return_split=False,
+                target_flop_ratios=hp_target_flop_ratios,
+                flop_ranges_by_ratio=acc_pred_flop_ranges_per_benchmark_by_ratio[benchmark_name],
+                selected_seed=selected_best_seed_per_benchmark[benchmark_name],
+            ))
+            fig_hp_all.savefig(plot_output_dir / f"{hp_predictor_slug}_predicted_hp_table_all_{target_flop:.2e}.pdf", dpi=300, bbox_inches="tight")
+            plt.close(fig_hp_all)
+            print(f"    ✓ Saved: {plot_output_dir / f'{hp_predictor_slug}_predicted_hp_table_all_{target_flop:.2e}.pdf'}")
 
     from src.plotting.consts import results_dir
     plots_dir = results_dir / "plots"
