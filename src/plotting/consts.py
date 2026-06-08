@@ -81,4 +81,11 @@ optimizers_dict = {
     # "chinchilla_gemstones": all_seeds,
     "carbs": all_seeds,
     # "carbs_with_priors": all_seeds,
+    "bo_space_expansion_mes": all_seeds,
+    "bo_space_expansion_ei": all_seeds,
+    "bo_space_expansion_jes": all_seeds,
+    "bo_left_budget": all_seeds,
+    # "bo_left_budget_ei": all_seeds,
+    # "bo_left_budget_jes": all_seeds,
+    # "bo_left_budget_with_priors": all_seeds,
 }

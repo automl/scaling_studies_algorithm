@@ -1,7 +1,5 @@
 from plotting.prediction_plots import _extract_result_value, _format_hp_table_value
 from src.plotting.standalone_plots import process_seed
-from src.loss_predictor import LossPredictorTypes, predict_loss
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, cast, Callable
 import json

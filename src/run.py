@@ -27,11 +27,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     optimizers = [
-        OptimizerEnum.CHINCHILLA_APPROACH1, 
-        OptimizerEnum.CHINCHILLA_APPROACH2,
+        # OptimizerEnum.BO_SPACE_EXPANSION,
+        OptimizerEnum.BO_LEFT_BUDGET,
+        # OptimizerEnum.CHINCHILLA_APPROACH1, 
+        # OptimizerEnum.CHINCHILLA_APPROACH2,
         # OptimizerEnum.CHINCHILLA_GEMSTONES, 
-        OptimizerEnum.RANDOM_SEARCH,
-        OptimizerEnum.CARBS,
+        # OptimizerEnum.RANDOM_SEARCH,
+        # OptimizerEnum.CARBS,
         # OptimizerEnum.GRID_SEARCH
         ] if args.optimizer == "" else [OptimizerEnum(args.optimizer)]
 

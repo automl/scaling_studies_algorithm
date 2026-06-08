@@ -17,8 +17,9 @@ from src.scaling_law_fit import fit_power_law, predict_from_loglog_fit
 from src.benchmarks.configs import get_benchmark
 from src.plotting.utils import OPTIMIZER_LABELS, get_optimizer_color,\
     get_optimizer_linestyle, get_optimizer_label, _split_optimizers_by_priors, \
-    _placeholder_plot, _get_global_flop_bounds, _normalize_flop_counts, \
-    _actual_costs_from_cumulative, _get_hypervolume_bounds, _get_common_xlim, _replot_lines
+    _placeholder_plot, _composite_empty_placeholder, _get_global_flop_bounds, \
+    _normalize_flop_counts, _actual_costs_from_cumulative, _get_hypervolume_bounds, \
+    _get_common_xlim, _replot_lines, split_by_priors
 
 
 from src.plotting.standalone_plots import (
@@ -93,6 +94,49 @@ plt.rcParams.update({
 
 
 
+def _get_prediction_cache_path(
+    base_path: Path,
+    opt_name: str,
+    seed: int | str,
+    predictor_slug: str,
+    target_flop: float,
+    kind: str,
+) -> Path:
+    safe_slug = predictor_slug.replace(" ", "_").replace("/", "_")
+    return base_path / opt_name / f"seed_{seed}" / "prediction_cache" / f"{kind}_{safe_slug}_{target_flop:.2e}.npz"
+
+
+def _load_or_compute_trajectory(
+    cache_path: Path,
+    n_trials: int,
+    compute_fn,
+) -> np.ndarray:
+    """Return cached per-trial predictions or run compute_fn() and cache the result."""
+    if cache_path.exists():
+        try:
+            data = np.load(cache_path, allow_pickle=False)
+            if int(data["n_trials"]) == n_trials:
+                return data["pred_values"]
+        except Exception:
+            pass
+
+    pred_values = compute_fn()
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(cache_path, pred_values=pred_values, n_trials=np.array(n_trials))
+    except Exception as e:
+        print(f"Warning: could not save prediction cache to {cache_path}: {e}")
+    return pred_values
+
+
+@split_by_priors(
+    lambda kw: _placeholder_plot(
+        figsize=kw.get("figsize", (5.5, 3.5)),
+        title=kw.get("title", ""),
+        xlabel="Normalized Cumulative FLOPs" if kw.get("normalized_flops", True) else "Cumulative FLOPs",
+        ylabel=r"$|L - L^*|$" if kw.get("abs_loss_diff", False) else r"$L$",
+    )
+)
 def plot_predicted_loss_over_flops(
     *,
     base_path: str | Path,
@@ -106,85 +150,12 @@ def plot_predicted_loss_over_flops(
     flop_range: tuple[float, float] | None = None,
     true_pareto_info: dict[str, list] | None = None,
     normalized_flops: bool = True,
-    return_split: bool = True,
     y_clip_quantile: float | None = 0.99,
     abs_loss_diff: bool = False,
 ) -> Any:
     """Plot predicted loss over cumulative FLOPs using trial prefixes."""
     if target_flop <= 0:
         raise ValueError("target_flop must be positive")
-
-    if return_split:
-        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
-
-        fig_all, ax_all = cast(tuple[Any, Any], plot_predicted_loss_over_flops(
-            base_path=base_path,
-            optimizers=all_opts,
-            target_flop=target_flop,
-            predictor_type=predictor_type,
-            key_to_extract=key_to_extract,
-            loss_key=loss_key,
-            figsize=figsize,
-            title=title,
-            flop_range=flop_range,
-            true_pareto_info=true_pareto_info,
-            normalized_flops=normalized_flops,
-            return_split=False,
-            y_clip_quantile=y_clip_quantile,
-            abs_loss_diff=abs_loss_diff,
-        ))
-
-        if with_priors:
-            fig_with, ax_with = cast(tuple[Any, Any], plot_predicted_loss_over_flops(
-                base_path=base_path,
-                optimizers=with_priors,
-                target_flop=target_flop,
-                predictor_type=predictor_type,
-                key_to_extract=key_to_extract,
-                loss_key=loss_key,
-                figsize=figsize,
-                title=f"{title} (with priors)",
-                flop_range=flop_range,
-                true_pareto_info=true_pareto_info,
-                normalized_flops=normalized_flops,
-                return_split=False,
-                y_clip_quantile=y_clip_quantile,
-                abs_loss_diff=abs_loss_diff,
-            ))
-        else:
-            fig_with, ax_with = _placeholder_plot(
-                figsize=figsize,
-                title=f"{title} (with priors)",
-                xlabel="Normalized Cumulative FLOPs" if normalized_flops else "Cumulative FLOPs",
-                ylabel=r"$|L - L^*|$" if abs_loss_diff else r"$L$",
-            )
-
-        if without_priors:
-            fig_without, ax_without = cast(tuple[Any, Any], plot_predicted_loss_over_flops(
-                base_path=base_path,
-                optimizers=without_priors,
-                target_flop=target_flop,
-                predictor_type=predictor_type,
-                key_to_extract=key_to_extract,
-                loss_key=loss_key,
-                figsize=figsize,
-                title=f"{title} (without priors)",
-                flop_range=flop_range,
-                true_pareto_info=true_pareto_info,
-                normalized_flops=normalized_flops,
-                return_split=False,
-                y_clip_quantile=y_clip_quantile,
-                abs_loss_diff=abs_loss_diff,
-            ))
-        else:
-            fig_without, ax_without = _placeholder_plot(
-                figsize=figsize,
-                title=f"{title} (without priors)",
-                xlabel="Normalized Cumulative FLOPs" if normalized_flops else "Cumulative FLOPs",
-                ylabel=r"$|L - L^*|$" if abs_loss_diff else r"$L$",
-            )
-
-        return (fig_all, ax_all), (fig_with, ax_with), (fig_without, ax_without)
 
     from src.loss_predictor import LossPredictorTypes, predict_loss
 
@@ -238,33 +209,36 @@ def plot_predicted_loss_over_flops(
             trial_flops = np.where(np.isfinite(trial_flops) & (trial_flops > 0), trial_flops, 0.0)
             cumulative_flops = np.cumsum(trial_flops)
 
-            pred_means: list[float] = []
-            for n_trials in range(1, len(rows) + 1):
-                try:
-                    predicted_loss, info = predict_loss(
-                        predictor_type=predictor_type,
-                        target_flop=target_flop,
-                        rows=rows[:n_trials],
-                        best_loss_guess=best_loss_guess
-                    )
-                    if n_trials == len(rows):
-                        predictor_slug = getattr(predictor_type, "value", None) or getattr(predictor_type, "name", None) or str(predictor_type)
-                        predictor_slug = str(predictor_slug)
-                        file_path = base_path / "plots" / predictor_slug / opt_name / f"seed_{seed}" / "final_prediction_info.json"
-                        try:
-                            file_path.parent.mkdir(parents=True, exist_ok=True)
-                            with open(file_path, "w+") as f:
-                                json.dump(asdict(info), f, indent=2)
-                            print(f"Saved final prediction info for {opt_name} seed {seed} to {file_path}")
-                        except Exception as _e:
-                            print(f"Warning: could not save final prediction info for {opt_name} seed {seed}: {_e}")
-                        
-                    pred_means.append(float(predicted_loss))
-                except Exception as e:
-                    pred_means.append(np.nan)
+            predictor_slug = str(getattr(predictor_type, "value", None) or getattr(predictor_type, "name", None) or str(predictor_type))
+            _loss_cache_path = _get_prediction_cache_path(base_path, opt_name, seed, predictor_slug, target_flop, "loss")
+            _rows_snap = rows
+
+            def _compute_loss_preds():
+                _preds: list[float] = []
+                for _n in range(1, len(_rows_snap) + 1):
+                    try:
+                        _loss, _info = predict_loss(
+                            predictor_type=predictor_type,
+                            target_flop=target_flop,
+                            rows=_rows_snap[:_n],
+                            best_loss_guess=best_loss_guess,
+                        )
+                        if _n == len(_rows_snap):
+                            _fpath = base_path / "plots" / predictor_slug / opt_name / f"seed_{seed}" / "final_prediction_info.json"
+                            try:
+                                _fpath.parent.mkdir(parents=True, exist_ok=True)
+                                with open(_fpath, "w+") as _f:
+                                    json.dump(asdict(_info), _f, indent=2)
+                                print(f"Saved final prediction info for {opt_name} seed {seed} to {_fpath}")
+                            except Exception as _e:
+                                print(f"Warning: could not save final prediction info for {opt_name} seed {seed}: {_e}")
+                        _preds.append(float(_loss))
+                    except Exception:
+                        _preds.append(np.nan)
+                return np.asarray(_preds, dtype=float)
 
             x = np.asarray(cumulative_flops, dtype=float)
-            y = np.asarray(pred_means, dtype=float)
+            y = _load_or_compute_trajectory(_loss_cache_path, len(rows), _compute_loss_preds)
             if abs_loss_diff:
                 y = np.abs(y - float(true_target_loss))
                 y = np.where(y == 0.0, np.finfo(float).tiny, y)
@@ -796,6 +770,14 @@ def plot_n_param_predictor_comparison_for_optimizer(
     
     return fig, ax
 
+@split_by_priors(
+    lambda kw: _placeholder_plot(
+        figsize=kw.get("figsize", (5.5, 3.5)),
+        title=kw.get("title", ""),
+        xlabel="Normalized Cumulative FLOPs" if kw.get("normalized_flops", True) else "Cumulative FLOPs",
+        ylabel=r"$|N - N^*|$" if kw.get("abs_param_diff", False) else r"$N$",
+    )
+)
 def plot_predicted_n_param_over_flops(
     *,
     base_path: str | Path,
@@ -809,88 +791,12 @@ def plot_predicted_n_param_over_flops(
     flop_range: tuple[float, float] | None = None,
     true_pareto_info: dict[str, list] | None = None,
     normalized_flops: bool = True,
-    return_split: bool = True,
     y_clip_quantile: float | None = 0.99,
     abs_param_diff: bool = False,
 ) -> Any:
-    """Plot predicted n_param over cumulative FLOPs using trial prefixes.
-
-    y_clip_quantile clips the upper y-limit on a log scale, matching
-    plot_predicted_loss_over_flops. Set it to None to disable clipping.
-    """
+    """Plot predicted n_param over cumulative FLOPs using trial prefixes."""
     if target_flop <= 0:
         raise ValueError("target_flop must be positive")
-    if return_split:
-        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
-
-        fig_all, ax_all = cast(tuple[Any, Any], plot_predicted_n_param_over_flops(
-            base_path=base_path,
-            optimizers=all_opts,
-            target_flop=target_flop,
-            predictor_type=predictor_type,
-            key_to_extract=key_to_extract,
-            loss_key=loss_key,
-            figsize=figsize,
-            title=title,
-            flop_range=flop_range,
-            true_pareto_info=true_pareto_info,
-            normalized_flops=normalized_flops,
-            return_split=False,
-            y_clip_quantile=y_clip_quantile,
-            abs_param_diff=abs_param_diff,
-        ))
-
-        if with_priors:
-            fig_with, ax_with = cast(tuple[Any, Any], plot_predicted_n_param_over_flops(
-                base_path=base_path,
-                optimizers=with_priors,
-                target_flop=target_flop,
-                predictor_type=predictor_type,
-                key_to_extract=key_to_extract,
-                loss_key=loss_key,
-                figsize=figsize,
-                title=f"{title} (with priors)",
-                flop_range=flop_range,
-                true_pareto_info=true_pareto_info,
-                normalized_flops=normalized_flops,
-                return_split=False,
-                y_clip_quantile=y_clip_quantile,
-                abs_param_diff=abs_param_diff,
-            ))
-        else:
-            fig_with, ax_with = _placeholder_plot(
-                figsize=figsize,
-                title=f"{title} (with priors)",
-                xlabel="Normalized Cumulative FLOPs" if normalized_flops else "Cumulative FLOPs",
-                ylabel=r"$|N - N^*|$" if abs_param_diff else r"$N$",
-            )
-
-        if without_priors:
-            fig_without, ax_without = cast(tuple[Any, Any], plot_predicted_n_param_over_flops(
-                base_path=base_path,
-                optimizers=without_priors,
-                target_flop=target_flop,
-                predictor_type=predictor_type,
-                key_to_extract=key_to_extract,
-                loss_key=loss_key,
-                figsize=figsize,
-                title=f"{title} (without priors)",
-                flop_range=flop_range,
-                true_pareto_info=true_pareto_info,
-                normalized_flops=normalized_flops,
-                return_split=False,
-                y_clip_quantile=y_clip_quantile,
-                abs_param_diff=abs_param_diff,
-            ))
-        else:
-            fig_without, ax_without = _placeholder_plot(
-                figsize=figsize,
-                title=f"{title} (without priors)",
-                xlabel="Normalized Cumulative FLOPs" if normalized_flops else "Cumulative FLOPs",
-                ylabel=r"$|N - N^*|$" if abs_param_diff else r"$N$",
-            )
-
-        return (fig_all, ax_all), (fig_with, ax_with), (fig_without, ax_without)
 
     from src.scale_param_predictor import ScaleParamPredictorTypes, predict_scale_parameters
 
@@ -976,18 +882,26 @@ def plot_predicted_n_param_over_flops(
             if total_trials <= 0:
                 continue
 
-            pred_n_params: list[float] = []
-            for n_trials in range(1, total_trials + 1):
-                try:
-                    (pred_n_param, _pred_n_data), _fit_info = predict_scale_parameters(
-                        predictor_type=predictor_type,
-                        target_flop=target_flop,
-                        rows=source_rows[:n_trials],
-                        best_loss_guess=best_loss_guess,
-                    )
-                    pred_n_params.append(float(pred_n_param))
-                except Exception:
-                    pred_n_params.append(np.nan)
+            _nparam_predictor_slug = str(getattr(predictor_type, "value", None) or getattr(predictor_type, "name", None) or str(predictor_type))
+            _nparam_cache_path = _get_prediction_cache_path(base_path, opt_name, seed, _nparam_predictor_slug, target_flop, "nparam")
+            _source_rows_snap = source_rows
+
+            def _compute_nparam_preds():
+                _preds: list[float] = []
+                for _n in range(1, total_trials + 1):
+                    try:
+                        (_n_param, _), _ = predict_scale_parameters(
+                            predictor_type=predictor_type,
+                            target_flop=target_flop,
+                            rows=_source_rows_snap[:_n],
+                            best_loss_guess=best_loss_guess,
+                        )
+                        _preds.append(float(_n_param))
+                    except Exception:
+                        _preds.append(np.nan)
+                return np.asarray(_preds, dtype=float)
+
+            pred_n_params_arr = _load_or_compute_trajectory(_nparam_cache_path, total_trials, _compute_nparam_preds)
 
             try:
                 (final_pred_n_param, final_pred_n_data), final_fit_info = predict_scale_parameters(
@@ -1013,7 +927,7 @@ def plot_predicted_n_param_over_flops(
                 pass
 
             x = np.asarray(cumulative_flops[:total_trials], dtype=float)
-            y = np.asarray(pred_n_params, dtype=float)
+            y = np.asarray(pred_n_params_arr, dtype=float)
             if abs_param_diff:
                 y = np.abs(np.log10(y) - float(np.log10(true_target_n_param)))
                 y = np.where(y == 0.0, np.finfo(float).tiny, y)
@@ -1310,17 +1224,7 @@ def _extract_result_value(result: Any, key: str) -> Any:
         current = current[part]
     return current
 
-
-
-
-
-
-
-
-
-
-
-
+@split_by_priors(_composite_empty_placeholder)
 def plot_predicted_loss_composite_across_benchmarks(
     *,
     base_path: Path,
@@ -1334,92 +1238,8 @@ def plot_predicted_loss_composite_across_benchmarks(
     figsize: tuple[int, int] = (5.5, 3.5),
     title: str = "Predicted Loss Composite Across Benchmarks",
     flop_ranges_per_benchmark: dict[str, tuple[float, float]] | None = None,
-    return_split: bool = True,
 ) -> Any:
-    """
-    Composite predicted-loss figures with all benchmarks + across-benchmark aggregate.
-
-    For each benchmark this reuses `plot_predicted_loss_over_flops` and places
-    the benchmark panels side-by-side with a single aggregate ranking panel
-    (left-most) that ranks optimizers by mean absolute error between the
-    predicted loss at `target_flop` and the true pareto loss at that flop.
-
-    Args:
-        base_path: Base path where benchmark optimizer directories are located
-        benchmarks: List of benchmark names
-        optimizers: Dict mapping optimizer name to list of seeds
-        target_flop: Target FLOP for prediction
-        predictor_type: Predictor to use
-        flop_ranges_per_benchmark: Optional per-benchmark flop ranges for plotting
-        true_pareto_info_per_benchmark: Optional mapping benchmark -> pareto info dict
-        return_split: If True returns 3 groups (all/with_priors/without_priors)
-
-    Returns:
-        If return_split=True: tuple of 3 figures
-        If return_split=False: single figure (fig, axes)
-    """
-    if return_split:
-        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
-
-        result_all = cast(tuple[Any, Any], plot_predicted_loss_composite_across_benchmarks(
-            base_path=base_path,
-            benchmarks=benchmarks,
-            optimizers=all_opts,
-            target_flop_per_benchmark=target_flop_per_benchmark,
-            predictor_type=predictor_type,
-            key_to_extract=key_to_extract,
-            loss_key=loss_key,
-            figsize=figsize,
-            title=title,
-            flop_ranges_per_benchmark=flop_ranges_per_benchmark,
-            true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
-            return_split=False,
-        ))
-
-        if with_priors:
-            result_with = cast(tuple[Any, Any], plot_predicted_loss_composite_across_benchmarks(
-                base_path=base_path,
-                benchmarks=benchmarks,
-                optimizers=with_priors,
-                target_flop_per_benchmark=target_flop_per_benchmark,
-                predictor_type=predictor_type,
-                key_to_extract=key_to_extract,
-                loss_key=loss_key,
-                figsize=figsize,
-                title=f"{title} (with priors)",
-                flop_ranges_per_benchmark=flop_ranges_per_benchmark,
-                true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
-                return_split=False,
-            ))
-        else:
-            fig_with, ax_with = plt.subplots(figsize=(12, 4 * (len(benchmarks) + 1)))
-            ax_with.text(0.5, 0.5, "No optimizers in with_priors group",
-                         ha="center", va="center", transform=ax_with.transAxes)
-            result_with = (fig_with, ax_with)
-
-        if without_priors:
-            result_without = cast(tuple[Any, Any], plot_predicted_loss_composite_across_benchmarks(
-                base_path=base_path,
-                benchmarks=benchmarks,
-                optimizers=without_priors,
-                target_flop_per_benchmark=target_flop_per_benchmark,
-                predictor_type=predictor_type,
-                key_to_extract=key_to_extract,
-                loss_key=loss_key,
-                figsize=figsize,
-                title=f"{title} (without priors)",
-                flop_ranges_per_benchmark=flop_ranges_per_benchmark,
-                true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
-                return_split=False,
-            ))
-        else:
-            fig_without, ax_without = plt.subplots(figsize=(12, 4 * (len(benchmarks) + 1)))
-            ax_without.text(0.5, 0.5, "No optimizers in without_priors group",
-                           ha="center", va="center", transform=ax_without.transAxes)
-            result_without = (fig_without, ax_without)
-
-        return result_all, result_with, result_without
-
+    """Composite predicted-loss figures with all benchmarks + across-benchmark aggregate."""
     # Create composite figure with subplots for each benchmark + aggregate
     num_subplots = len(benchmarks) + 1
     cols = num_subplots
@@ -1629,6 +1449,7 @@ def plot_predicted_loss_composite_across_benchmarks(
     return fig, axes
 
 
+@split_by_priors(_composite_empty_placeholder)
 def plot_predicted_n_param_composite_across_benchmarks(
     *,
     base_path: Path,
@@ -1643,80 +1464,8 @@ def plot_predicted_n_param_composite_across_benchmarks(
     title: str = "Predicted n_param Composite Across Benchmarks",
     flop_ranges_per_benchmark: dict[str, tuple[float, float]] | None = None,
     y_clip_quantile: float | None = 0.99,
-    return_split: bool = True,
 ) -> Any:
-    """
-    Composite predicted-n_param figures with per-benchmark panels plus an
-    across-benchmark ranking panel.
-
-    The aggregate panel ranks optimizers by lower absolute error between
-    predicted n_param and the true Pareto n_param at the benchmark target FLOP.
-    """
-    if return_split:
-        all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
-
-        result_all = cast(tuple[Any, Any], plot_predicted_n_param_composite_across_benchmarks(
-            base_path=base_path,
-            benchmarks=benchmarks,
-            optimizers=all_opts,
-            target_flop_per_benchmark=target_flop_per_benchmark,
-            true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
-            predictor_type=predictor_type,
-            key_to_extract=key_to_extract,
-            loss_key=loss_key,
-            figsize=figsize,
-            title=title,
-            flop_ranges_per_benchmark=flop_ranges_per_benchmark,
-            y_clip_quantile=y_clip_quantile,
-            return_split=False,
-        ))
-
-        if with_priors:
-            result_with = cast(tuple[Any, Any], plot_predicted_n_param_composite_across_benchmarks(
-                base_path=base_path,
-                benchmarks=benchmarks,
-                optimizers=with_priors,
-                target_flop_per_benchmark=target_flop_per_benchmark,
-                true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
-                predictor_type=predictor_type,
-                key_to_extract=key_to_extract,
-                loss_key=loss_key,
-                figsize=figsize,
-                title=f"{title} (with priors)",
-                flop_ranges_per_benchmark=flop_ranges_per_benchmark,
-                y_clip_quantile=y_clip_quantile,
-                return_split=False,
-            ))
-        else:
-            fig_with, ax_with = plt.subplots(figsize=(12, 4 * (len(benchmarks) + 1)))
-            ax_with.text(0.5, 0.5, "No optimizers in with_priors group",
-                         ha="center", va="center", transform=ax_with.transAxes)
-            result_with = (fig_with, ax_with)
-
-        if without_priors:
-            result_without = cast(tuple[Any, Any], plot_predicted_n_param_composite_across_benchmarks(
-                base_path=base_path,
-                benchmarks=benchmarks,
-                optimizers=without_priors,
-                target_flop_per_benchmark=target_flop_per_benchmark,
-                true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
-                predictor_type=predictor_type,
-                key_to_extract=key_to_extract,
-                loss_key=loss_key,
-                figsize=figsize,
-                title=f"{title} (without priors)",
-                flop_ranges_per_benchmark=flop_ranges_per_benchmark,
-                y_clip_quantile=y_clip_quantile,
-                return_split=False,
-            ))
-        else:
-            fig_without, ax_without = plt.subplots(figsize=(12, 4 * (len(benchmarks) + 1)))
-            ax_without.text(0.5, 0.5, "No optimizers in without_priors group",
-                            ha="center", va="center", transform=ax_without.transAxes)
-            result_without = (fig_without, ax_without)
-
-        return result_all, result_with, result_without
-
+    """Composite predicted-n_param figures with per-benchmark panels plus an across-benchmark ranking panel."""
     num_subplots = len(benchmarks) + 1
     cols = num_subplots
     figsize = (6 * cols, 4)

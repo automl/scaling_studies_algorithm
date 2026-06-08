@@ -38,12 +38,50 @@ def find_closest_divisible_n_heads(d_model: int, n_heads: int) -> int:
         if d_model % nh == 0:
             return nh
     raise ValueError(f"Could not find a valid n_heads for d_model {d_model} close to {n_heads}")
-    
 
-def parameters_estimator(**conf):
+
+def normalize_llm_config(raw_conf: dict) -> dict:
+    """Snap config values to the nearest valid values in the LLM search space.
+    
+    - Integer dimensions are rounded to nearest valid integer and clamped.
+    - Float dimensions are clamped to their valid domain bounds.
+    - Scales d_model by 64 and adjusts n_heads accordingly.
+    """
+    conf = dict(raw_conf)
+    
+    float_bounds = {
+        "lr": (1.0e-5, 1.0e-2),
+        "weight_decay": (1.0e-3, 0.2),
+        "beta1": (0.8, 0.99),
+        "beta2": (0.9, 0.999),
+        "cooldown_steps": (0.0, 0.3),
+    }
+    int_bounds = {
+        "d_model": (4, 18),
+        "n_layers": (4, 24),
+        "n_heads": (3, 12),
+        "n_tokens": (int(2e8), int(1.6e10)),
+    }
+    
+    for name, value in list(conf.items()):
+        if name in int_bounds:
+            lower_i, upper_i = int_bounds[name]
+            snapped = int(round(float(value)))
+            conf[name] = min(max(snapped, lower_i), upper_i)
+        elif name in float_bounds:
+            lower_f, upper_f = float_bounds[name]
+            v = float(value)
+            conf[name] = min(max(v, lower_f), upper_f)
+    
+    # Scale d_model by 64 and adjust n_heads
     conf["d_model"] = int(conf["d_model"]) * 64
     conf["n_heads"] = find_closest_divisible_n_heads(conf["d_model"], int(conf["n_heads"]) * 2)
     
+    return conf
+
+
+def parameters_estimator(**conf):
+    conf = normalize_llm_config(conf)
     conf["n_layers"] = int(conf["n_layers"])
     conf["warmup_steps"] = 0.1
     config = LLMConfig(**conf)
@@ -52,8 +90,27 @@ def parameters_estimator(**conf):
     
 def evaluate_pipeline_wrapper(bench: LLMBenchmark, lc_aware: bool = False):
     def evaluate_pipeline(lr, weight_decay, beta1, beta2, cooldown_steps, d_model, n_layers, n_heads, n_tokens) -> dict:
-        d_model = 64 * int(d_model)
-        n_heads = find_closest_divisible_n_heads(d_model, 2 * int(n_heads))
+        normalized_conf = normalize_llm_config({
+            "lr": lr,
+            "weight_decay": weight_decay,
+            "beta1": beta1,
+            "beta2": beta2,
+            "cooldown_steps": cooldown_steps,
+            "d_model": d_model,
+            "n_layers": n_layers,
+            "n_heads": n_heads,
+            "n_tokens": n_tokens,
+        })
+        
+        lr = normalized_conf["lr"]
+        weight_decay = normalized_conf["weight_decay"]
+        beta1 = normalized_conf["beta1"]
+        beta2 = normalized_conf["beta2"]
+        cooldown_steps = normalized_conf["cooldown_steps"]
+        d_model = normalized_conf["d_model"]
+        n_layers = normalized_conf["n_layers"]
+        n_heads = normalized_conf["n_heads"]
+        n_tokens = normalized_conf["n_tokens"]
 
         config = LLMConfig(
             d_model=d_model,
@@ -117,8 +174,7 @@ def evaluate_pipeline_wrapper(bench: LLMBenchmark, lc_aware: bool = False):
     return evaluate_pipeline
 
 def flops_estimator(**conf):
-    conf["d_model"] = int(conf["d_model"]) * 64
-    conf["n_heads"] = find_closest_divisible_n_heads(conf["d_model"], int(conf["n_heads"]) * 2)
+    conf = normalize_llm_config(conf)
     conf["n_layers"] = int(conf["n_layers"])
     conf["warmup_steps"] = 0.1
     config = LLMConfig(**conf)

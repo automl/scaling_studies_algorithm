@@ -2,12 +2,25 @@ from __future__ import annotations
 
 
 OPTIMIZER_COLORS = {
-    "bo_space_expansion": "#0173B2",
-    "bo_space_expansion_with_priors": "#0173B2",
+    "bo_space_expansion_mes": "#009E73",              # Okabe-Ito bluish green
+    "bo_space_expansion_mes_with_priors": "#005C42",  # dark bluish green
 
-    "bo_left_budget": "#DE8F05",
-    "bo_left_budget_with_priors": "#DE8F05",
-    
+    "bo_space_expansion_ei": "#56B4E9",              # Okabe-Ito sky blue
+    "bo_space_expansion_ei_with_priors": "#2277BB",  # dark sky blue
+
+    "bo_space_expansion_jes": "#000000",              # black
+    "bo_space_expansion_jes_with_priors": "#555555",  # dark gray
+
+    "bo_left_budget_mes": "#E69F00",                    # Okabe-Ito orange
+    "bo_left_budget_mes_with_priors": "#A67000",        # dark orange
+
+    "bo_left_budget": "#D55E00",                     # Okabe-Ito vermilion
+    "bo_left_budget_with_priors": "#8B3D00",         # dark vermilion
+    "bo_left_budget_ei": "#D55E00",                     # Okabe-Ito vermilion
+    "bo_left_budget_ei_with_priors": "#8B3D00",         # dark vermilion
+
+    "bo_left_budget_jes": "#F0E442",                    # Okabe-Ito yellow
+    "bo_left_budget_jes_with_priors": "#B0A800",        # dark yellow
 
     "random_search": "#CC78BC",
     "random_search_with_priors": "#CC78BC",
@@ -15,9 +28,6 @@ OPTIMIZER_COLORS = {
     # Cost-Aware methods
     "carbs": "#CA0020",
     "carbs_with_priors": "#CA0020",
-    
-    "scaling_law_guided": "#8214A1",
-    "chinchilla_guided_scaling": "#8214A1",
     
     # Chinchilla approach 1 variants
     "chinchilla_approach1": "#F4A261",

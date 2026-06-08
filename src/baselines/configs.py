@@ -10,8 +10,13 @@ from neps.optimizers.algorithms import custom, CustomOptimizer
 from src.baselines.chinchilla_guided_scaling import chinchilla_guided_scaling
 
 class OptimizerEnum(StrEnum):
-    BO_SPACE_EXPANSION = "bo_space_expansion"
-    BO_LEFT_BUDGET = "bo_left_budget"
+    BO_SPACE_EXPANSION_MES = "bo_space_expansion_mes"
+    BO_SPACE_EXPANSION_EI = "bo_space_expansion_ei"
+    BO_SPACE_EXPANSION_EI_COST_AWARE = "bo_space_expansion_ei_cost_aware"
+    BO_SPACE_EXPANSION_JES = "bo_space_expansion_jes"
+    BO_LEFT_BUDGET_MES = "bo_left_budget_mes"
+    BO_LEFT_BUDGET_EI = "bo_left_budget_ei"
+    BO_LEFT_BUDGET_JES = "bo_left_budget_jes"
     CHINCHILLA_APPROACH1 = "chinchilla_approach1"
     CHINCHILLA_APPROACH2 = "chinchilla_approach2"
     CHINCHILLA_GEMSTONES = "chinchilla_gemstones"
@@ -23,7 +28,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
     def get_optimizer(optimizer_name: OptimizerEnum, root_dir, max_evaluation_flops, max_flops, seed = 1, use_priors = False) -> tuple[Callable[..., Any] | CustomOptimizer, dict[str, Any]]:
         kwargs = {}
         match optimizer_name:
-            case OptimizerEnum.BO_SPACE_EXPANSION: 
+            case OptimizerEnum.BO_SPACE_EXPANSION_MES | OptimizerEnum.BO_SPACE_EXPANSION_EI | OptimizerEnum.BO_SPACE_EXPANSION_JES: 
                 return lambda space: bo_guided_scaling(
                     space,
                     params_estimator=param_estimator,
@@ -32,19 +37,24 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     max_evaluation_flops=max_evaluation_flops,
                     max_target_flops=max_flops,
                     device='cpu',
+                    use_priors=use_priors,
                     sampling_strategy="space_expansion",
+                    acquisition_func_type="IT-MES" if optimizer_name == OptimizerEnum.BO_SPACE_EXPANSION_MES else ("EI" if optimizer_name == OptimizerEnum.BO_SPACE_EXPANSION_EI else "IT-JES"),
+                    cost_aware="log" if optimizer_name == OptimizerEnum.BO_SPACE_EXPANSION_EI_COST_AWARE else False,
                 ), kwargs
         
-            case OptimizerEnum.BO_LEFT_BUDGET: 
+            case OptimizerEnum.BO_LEFT_BUDGET_MES | OptimizerEnum.BO_LEFT_BUDGET_EI | OptimizerEnum.BO_LEFT_BUDGET_JES:
                 return lambda space: bo_guided_scaling(
                     space,
                     params_estimator=param_estimator,
                     seen_datapoints_estimator=seen_datapoints_estimator,
                     flops_estimator=flops_estimator,
                     max_evaluation_flops=max_evaluation_flops,
+                    use_priors=use_priors,
                     max_target_flops=max_flops,
                     device='cpu',
                     sampling_strategy="left_budget_contraction",
+                    acquisition_func_type="IT-MES" if optimizer_name == OptimizerEnum.BO_LEFT_BUDGET_MES else ("EI" if optimizer_name == OptimizerEnum.BO_LEFT_BUDGET_EI else "IT-JES"),
                 ), kwargs
         
         

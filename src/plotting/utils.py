@@ -1,4 +1,6 @@
 from pathlib import Path
+import functools
+import inspect
 import re
 from typing import Any, cast, Callable
 
@@ -18,6 +20,15 @@ OPTIMIZER_LABELS: dict[str, str] = {
     "chinchilla_approach2_with_priors": "Chinchilla A2 (with priors)",
     "carbs": "CARBS",
     "carbs_with_priors": "CARBS (with priors)",
+    "bo_space_expansion": "BO Space Expansion",
+    "bo_space_expansion_with_priors": "BO Space Expansion (with priors)",
+    
+    "bo_space_expansion_EI": "BO Space Expansion (EI)",
+    "bo_space_expansion_EI_with_priors": "BO Space Expansion (EI) (with priors)",
+
+    "bo_left_budget": "BO Left Budget",
+    "bo_left_budget_with_priors": "BO Left Budget (with priors)",
+
 }
 
 
@@ -423,6 +434,65 @@ def merge_split_composite_plots(
 
     plt.tight_layout(rect=[0, 0.05, 1, 1])
     return master_fig, master_axes
+
+
+def _composite_empty_placeholder(kw: dict[str, Any]) -> tuple[Any, Any]:
+    """Placeholder figure for composite multi-panel plots when a group is empty."""
+    benchmarks = kw.get("benchmarks", [])
+    cols = max(len(benchmarks) + 1, 1)
+    fig, ax = plt.subplots(1, 1, figsize=(6 * cols, 4))
+    ax.text(0.5, 0.5, "No optimizers in this group",
+            ha="center", va="center", transform=ax.transAxes)
+    return fig, ax
+
+
+def split_by_priors(
+    get_placeholder: Callable[[dict[str, Any]], tuple[Any, Any]],
+) -> Callable:
+    """
+    Decorator for plot functions that produce separate figures for
+    'all', 'with priors', and 'without priors' optimizer groups.
+
+    The decorated function must accept keyword-only arguments and implement
+    only the single-group (return_split=False) case. This decorator intercepts
+    return_split=True, calls the function three times with the appropriate
+    optimizer subsets, and uses get_placeholder when a group is empty.
+
+    Args:
+        get_placeholder: callable(kwargs) -> (fig, axes) used when a group
+            has no optimizers. Receives the full kwargs dict with 'title'
+            already overridden to the group-specific title.
+    """
+    def decorator(func: Callable) -> Callable:
+        _has_title = "title" in inspect.signature(func).parameters
+
+        @functools.wraps(func)
+        def wrapper(**kwargs: Any) -> Any:
+            if not kwargs.pop("return_split", True):
+                return func(**kwargs)
+
+            optimizers = kwargs["optimizers"]
+            title = kwargs.get("title", "")
+            all_opts, with_priors, without_priors = _split_optimizers_by_priors(optimizers)
+
+            base = {**kwargs}  # return_split already popped above
+            result_all = func(**{**base, "optimizers": all_opts})
+
+            def _run_or_placeholder(group: dict, suffix: str) -> Any:
+                group_title = f"{title} {suffix}".strip()
+                if group:
+                    call_kw = {**base, "optimizers": group}
+                    if _has_title:
+                        call_kw["title"] = group_title
+                    return func(**call_kw)
+                return get_placeholder({**kwargs, "title": group_title})
+
+            result_with = _run_or_placeholder(with_priors, "(with priors)")
+            result_without = _run_or_placeholder(without_priors, "(without priors)")
+            return result_all, result_with, result_without
+
+        return wrapper
+    return decorator
 
 
 def merge_pareto_plots(benchmark_dict):
