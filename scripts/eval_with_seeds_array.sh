@@ -16,7 +16,7 @@ export PYTHONPATH="/home/alipourn/scaling_studies_algorithm:$PYTHONPATH"
 # Map SLURM_ARRAY_TASK_ID (0-10) to seeds (40-50)
 seed=$((40 + SLURM_ARRAY_TASK_ID))
 
-benchmark="${1:-llm}"
+benchmark="${1:-openclip}"
 
 echo "Running seed: $seed (array task: $SLURM_ARRAY_TASK_ID)"
 

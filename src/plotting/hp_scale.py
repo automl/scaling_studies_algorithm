@@ -126,7 +126,7 @@ def plot_hp_scale(hp_values, objectives, flops, params, hp_name: str, save_dir: 
             fitted_hp = np.exp(fitted_hp_log)
             flops_range = np.exp(flops_range_log)
             axes.plot(flops_range, fitted_hp, 'r--', linewidth=2.5, alpha=0.8, label=f'Linear fit (slope={slope_flops:.3f})')
-        
+
         # ax1.legend(loc='best', fontsize=10)
         axes.legend(loc='best', fontsize=10)
     
@@ -171,15 +171,20 @@ def plot_aspect_ratio_vs_loss(aspect_ratios, losses, save_dir: Path = None):
 
 
 if __name__ == "__main__":
-    # path = Path("scripts/results/openclip_grid_search/grid_search/seed_40")
-    bench = BenchmarkEnum.LLM
+    import argparse
+    parser = argparse.ArgumentParser(description="Plot hyperparameter scaling and Pareto fronts from benchmark results")
+    parser.add_argument("--bench", type=str, required=True, choices=[b.value for b in BenchmarkEnum], help="e.g., llm or openclip")
+    args = parser.parse_args()
+    bench_name = args.bench
+    bench = BenchmarkEnum(bench_name)
     pathes = {
         BenchmarkEnum.OPENCLIP:Path("/work/dlclarge1/alipourn-scan_suite/openclip/grid_search"),
         BenchmarkEnum.LLM: Path("/work/dlclarge1/alipourn-scan_suite/llm/grid_search")
     }
-    from surrogate_benchmark.vlm.api import VLMBenchmark, VLMConfig, Target
+    from dep.scan_bench_suite.scan_benchmark.llm.api import LLMTarget
+    from dep.scan_bench_suite.scan_benchmark.vlm.api import VLMTarget
     path = pathes[bench]
-    targets_per_bench = {BenchmarkEnum.LLM: LLM_TARGETS, BenchmarkEnum.OPENCLIP: Target.all()}
+    targets_per_bench = {BenchmarkEnum.LLM: LLM_TARGETS, BenchmarkEnum.OPENCLIP: VLMTarget.all()}
     targets = targets_per_bench[bench]
     losses = defaultdict(list)
     costs = []
