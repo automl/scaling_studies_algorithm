@@ -14,6 +14,7 @@ class OptimizerEnum(StrEnum):
     BO_SPACE_EXPANSION_EI = "bo_space_expansion_ei"
     BO_SPACE_EXPANSION_EI_COST_AWARE = "bo_space_expansion_ei_cost_aware"
     BO_SPACE_EXPANSION_JES = "bo_space_expansion_jes"
+    BO_LEFT_BUDGET_ZERO_MEAN_EI = "bo_left_budget_zero_mean_ei"
     BO_LEFT_BUDGET_MES = "bo_left_budget_mes"
     BO_LEFT_BUDGET_EI = "bo_left_budget_ei"
     BO_LEFT_BUDGET_JES = "bo_left_budget_jes"
@@ -43,7 +44,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     cost_aware="log" if optimizer_name == OptimizerEnum.BO_SPACE_EXPANSION_EI_COST_AWARE else False,
                 ), kwargs
         
-            case OptimizerEnum.BO_LEFT_BUDGET_MES | OptimizerEnum.BO_LEFT_BUDGET_EI | OptimizerEnum.BO_LEFT_BUDGET_JES:
+            case OptimizerEnum.BO_LEFT_BUDGET_MES | OptimizerEnum.BO_LEFT_BUDGET_EI | OptimizerEnum.BO_LEFT_BUDGET_JES | OptimizerEnum.BO_LEFT_BUDGET_ZERO_MEAN_EI:
                 return lambda space: bo_guided_scaling(
                     space,
                     params_estimator=param_estimator,
@@ -52,9 +53,14 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     max_evaluation_flops=max_evaluation_flops,
                     use_priors=use_priors,
                     max_target_flops=max_flops,
+                    use_gp_scaling_mean=optimizer_name != OptimizerEnum.BO_LEFT_BUDGET_ZERO_MEAN_EI,
                     device='cpu',
                     sampling_strategy="left_budget_contraction",
-                    acquisition_func_type="IT-MES" if optimizer_name == OptimizerEnum.BO_LEFT_BUDGET_MES else ("EI" if optimizer_name == OptimizerEnum.BO_LEFT_BUDGET_EI else "IT-JES"),
+                    acquisition_func_type="IT-MES" if optimizer_name == OptimizerEnum.BO_LEFT_BUDGET_MES 
+                                else (
+                                    "EI" if optimizer_name in [OptimizerEnum.BO_LEFT_BUDGET_EI, OptimizerEnum.BO_LEFT_BUDGET_ZERO_MEAN_EI]
+                                        else "IT-JES"
+                                    ),
                 ), kwargs
         
         

@@ -5,13 +5,13 @@ from pathlib import Path
 acc_flop_ranges_per_benchmark = {
     BenchmarkEnum.OPENCLIP.value: (4e16, get_benchmark(BenchmarkEnum.OPENCLIP.value, False).max_evaluation_flops * 0.9),
     BenchmarkEnum.LLM.value: (5.1e18, get_benchmark(BenchmarkEnum.LLM.value, False).max_evaluation_flops * 0.9),
-    BenchmarkEnum.TABPFN.value: (1e14, get_benchmark(BenchmarkEnum.TABPFN.value, False).max_evaluation_flops * 0.9),
+    BenchmarkEnum.TABPFN.value: (1e17, get_benchmark(BenchmarkEnum.TABPFN.value, False).max_evaluation_flops * 0.9),
 }
 
 acc_pred_flop_ranges_per_benchmark = {
     BenchmarkEnum.OPENCLIP.value: (4e16, get_benchmark(BenchmarkEnum.OPENCLIP.value, False).max_evaluation_flops * 0.9),
     BenchmarkEnum.LLM.value: (5.1e18, get_benchmark(BenchmarkEnum.LLM.value, False).max_evaluation_flops * 0.9),
-    BenchmarkEnum.TABPFN.value: (1e14, get_benchmark(BenchmarkEnum.TABPFN.value, False).max_evaluation_flops * 0.9),
+    BenchmarkEnum.TABPFN.value: (1e17, get_benchmark(BenchmarkEnum.TABPFN.value, False).max_evaluation_flops * 0.9),
 }
 
 selected_best_seed_per_benchmark = {
@@ -55,7 +55,7 @@ acc_pred_flop_ranges_per_benchmark_by_ratio = {
 true_pareto_info_per_benchmark = {
     BenchmarkEnum.OPENCLIP.value: load_or_generate_pareto_info(BenchmarkEnum.OPENCLIP.value),
     BenchmarkEnum.LLM.value: load_or_generate_pareto_info(BenchmarkEnum.LLM.value),
-    # BenchmarkEnum.TABPFN.value: load_or_generate_pareto_info(BenchmarkEnum.TABPFN.value),
+    BenchmarkEnum.TABPFN.value: load_or_generate_pareto_info(BenchmarkEnum.TABPFN.value),
 }
 
 bench_confs = {
@@ -73,19 +73,22 @@ all_seeds = list(set(range(40, 51)))
 # all_seeds = [40]
 optimizers_dict = {
     "random_search": all_seeds,
-    "random_search_with_priors": all_seeds,
+    # "random_search_with_priors": all_seeds,
     "chinchilla_approach1": all_seeds,
-    "chinchilla_approach1_with_priors": all_seeds,
+    # "chinchilla_approach1_with_priors": all_seeds,
     "chinchilla_approach2": all_seeds,
-    "chinchilla_approach2_with_priors": all_seeds,
+    # "chinchilla_approach2_with_priors": all_seeds,
     # "chinchilla_gemstones": all_seeds,
     "carbs": all_seeds,
-    "carbs_with_priors": all_seeds,
-    # "bo_space_expansion_mes": all_seeds,
-    # "bo_space_expansion_ei": all_seeds,
-    # "bo_space_expansion_jes": all_seeds,
+    # "carbs_with_priors": all_seeds,
+    "bo_space_expansion_mes": all_seeds,
+    "bo_space_expansion_ei": all_seeds,
+    "bo_space_expansion_jes": all_seeds,
     # "bo_left_budget": all_seeds,
-    # "bo_left_budget_ei": all_seeds,
-    # "bo_left_budget_jes": all_seeds,
+    "bo_left_budget_ei": all_seeds,
+    "bo_left_budget_jes": all_seeds,
+    "bo_left_budget_mes": all_seeds,
     # "bo_left_budget_with_priors": all_seeds,
+    "bo_left_budget_zero_mean_ei": all_seeds,
+    # "bo_left_budget_zero_mean_ei_with_priors": all_seeds,
 }

@@ -73,10 +73,10 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool) -> BenchmarkCo
             )
         case BenchmarkEnum.TABPFN:
             bench = tabpfn.get_benchmark()
-            # 3.398452e+07 parameters, 5.36870912e+08 data points, total flops: 2.206365e+17
+            # 3.398452e+07 parameters, 3.435974e+10 data points, total flops: 7.060368e+18
             # 1.060200e+04 parameters, 1.048576e+06 data points, total flops: 5.676123e+10
             min_flops = 5.676123e+10
-            max_flops = 1e+16
+            max_flops = 1e+18
             total_eval_flops = max_flops * 10
             return BenchmarkConfig(
                 space=tabpfn.get_pipeline_space(),

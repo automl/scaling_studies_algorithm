@@ -1168,30 +1168,6 @@ def calculate_pareto_line_areas_to_true(
             all_flop_grids.append(flop_grid)
 
     bounds = flop_range if flop_range is not None else _get_global_flop_bounds(all_flop_grids)
-    loss_bounds, hv_flops_bounds = _get_hypervolume_bounds(all_per_seed_data)
-
-    # Extend bounds to cover true Pareto so its normalized coordinates stay in [0,1].
-    # Without this, true Pareto points outside the search range would be clipped,
-    # shrinking [x_left, x_right] and underestimating the area gap.
-    true_flops_raw = np.asarray(true_pareto_info.get("flops", []), dtype=float)
-    true_losses_raw = np.asarray(true_pareto_info.get("loss", []), dtype=float)
-    true_valid = np.isfinite(true_flops_raw) & np.isfinite(true_losses_raw) & (true_flops_raw > 0) & (true_losses_raw > 0)
-    if np.any(true_valid):
-        true_log_flops = np.log10(np.maximum(1.0, true_flops_raw[true_valid]))
-        if hv_flops_bounds is not None:
-            hv_flops_bounds = (
-                min(hv_flops_bounds[0], float(np.min(true_log_flops))),
-                max(hv_flops_bounds[1], float(np.max(true_log_flops))),
-            )
-        else:
-            hv_flops_bounds = (float(np.min(true_log_flops)), float(np.max(true_log_flops)))
-        if loss_bounds is not None:
-            loss_bounds = (
-                min(loss_bounds[0], float(np.min(true_losses_raw[true_valid]))),
-                max(loss_bounds[1], float(np.max(true_losses_raw[true_valid]))),
-            )
-        else:
-            loss_bounds = (float(np.min(true_losses_raw[true_valid])), float(np.max(true_losses_raw[true_valid])))
 
     area_dict: dict[str, dict[str, np.ndarray]] = {}
 
@@ -1207,8 +1183,6 @@ def calculate_pareto_line_areas_to_true(
                 np.asarray(losses, dtype=float).tolist(),
                 seed_costs.tolist(),
                 true_pareto_info=true_pareto_info,
-                global_loss_bounds=loss_bounds,
-                global_flops_bounds=hv_flops_bounds,
                 log_loss_scale=True,
             )
             if res is None:
@@ -2851,7 +2825,7 @@ if __name__ == '__main__':
     benchmarks = [
         BenchmarkEnum.OPENCLIP.value, 
         BenchmarkEnum.LLM.value,
-        # BenchmarkEnum.TABPFN.value,
+        BenchmarkEnum.TABPFN.value,
     ]
 
     pareto_merged = {}

@@ -148,7 +148,7 @@ class PipelineScalingConfig(neps.PipelineSpace):
     )
     total_cells = neps.Integer(
         lower=1048576,
-        upper=1073741824,
+        upper=34359738368,
         is_scaling=True,
     )
     embedding_size = neps.Integer(
@@ -159,7 +159,7 @@ class PipelineScalingConfig(neps.PipelineSpace):
          is_scaling=True,
     )
     num_layers= neps.Integer(
-        lower=1,
+        lower=2,
         upper=32,
         log=True,
         log_base=2,
@@ -169,12 +169,16 @@ class PipelineScalingConfig(neps.PipelineSpace):
         lower=32,
         upper=128,
         prior=32,
+        log=True,
+        log_base=2,
         prior_confidence='high',
     )
     num_datapoints_max= neps.Integer(
         lower=128,
         upper=512,
         prior=128,
+        log=True,
+        log_base=2,
         prior_confidence='high',
     )
    
@@ -185,7 +189,7 @@ def get_macro_params_bounds(bench: TabPFNBenchmark) -> tuple[tuple[float, float,
         lr=0.05,
         effective_batch_size=256,
         embedding_size=256,
-        total_cells=1073741824,
+        total_cells=34359738368,
         num_layers=32,
         max_features=128,
         num_datapoints_max=512,
@@ -194,7 +198,7 @@ def get_macro_params_bounds(bench: TabPFNBenchmark) -> tuple[tuple[float, float,
     min_flop_conf = dict(
         lr=0.0001,
         effective_batch_size=16,
-        embedding_size=16,
+        embedding_size=4,
         total_cells=1048576,
         num_layers=2,
         max_features=32,
@@ -220,8 +224,8 @@ def get_macro_params_bounds(bench: TabPFNBenchmark) -> tuple[tuple[float, float,
     print(f"{min_params:e} parameters, {min_data:e} data points, total flops: {min_flops:e}")
     return ((min_params, min_data, min_flops), (max_params, max_data, max_flops))
 
-# 1.020000e+08 parameters, 6.000000e+07 data points, total flops: 5.970000e+17
-# 2.000000e+06 parameters, 6.000000e+05 data points, total flops: 3.600000e+13
+# 3.398452e+07 parameters, 3.435974e+10 data points, total flops: 7.060368e+18
+# 1.060200e+04 parameters, 1.048576e+06 data points, total flops: 5.676123e+10
 def get_pipeline_space():
     space = PipelineScalingConfig()
     return space
@@ -231,7 +235,7 @@ if __name__ == '__main__':
     #     lr=0.0001,
     #     effective_batch_size=64,
     #     embedding_size=256,
-    #     total_cells=1073741824,
+    #     total_cells=34359738368,
     #     num_layers=32,
     #     max_features=35,
     #     num_datapoints_max=236,

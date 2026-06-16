@@ -13,22 +13,19 @@ from src.plotting.plot_styles import OPTIMIZER_COLORS
 
 OPTIMIZER_LABELS: dict[str, str] = {
     "random_search": "RS",
-    "random_search_with_priors": "RS (with priors)",
     "chinchilla_approach1": "Chinchilla A1",
-    "chinchilla_approach1_with_priors": "Chinchilla A1 (with priors)",
     "chinchilla_approach2": "Chinchilla A2",
-    "chinchilla_approach2_with_priors": "Chinchilla A2 (with priors)",
+    "chinchilla_gemstones": "Chinchilla Gemstones",
     "carbs": "CARBS",
-    "carbs_with_priors": "CARBS (with priors)",
-    "bo_space_expansion": "BO Space Expansion",
-    "bo_space_expansion_with_priors": "BO Space Expansion (with priors)",
-    
-    "bo_space_expansion_EI": "BO Space Expansion (EI)",
-    "bo_space_expansion_EI_with_priors": "BO Space Expansion (EI) (with priors)",
-
+    "bo_space_expansion_mes": "BO Space Expansion (MES)",
+    "bo_space_expansion_ei": "BO Space Expansion (EI)",
+    "bo_space_expansion_ei_cost_aware": "BO Space Expansion (EI, Cost-Aware)",
+    "bo_space_expansion_jes": "BO Space Expansion (JES)",
+    "bo_left_budget_zero_mean_ei": "BO Left Budget (zero-mean EI)",
     "bo_left_budget": "BO Left Budget",
-    "bo_left_budget_with_priors": "BO Left Budget (with priors)",
-
+    "bo_left_budget_mes": "BO Left Budget (MES)",
+    "bo_left_budget_ei": "BO Left Budget (EI)",
+    "bo_left_budget_jes": "BO Left Budget (JES)",
 }
 
 
