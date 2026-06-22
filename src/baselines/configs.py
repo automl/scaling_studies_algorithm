@@ -18,6 +18,8 @@ class OptimizerEnum(StrEnum):
     BO_LEFT_BUDGET_MES = "bo_left_budget_mes"
     BO_LEFT_BUDGET_EI = "bo_left_budget_ei"
     BO_LEFT_BUDGET_JES = "bo_left_budget_jes"
+    BO_SPACE_EXPANSION_MODIFIED_JES = "bo_space_expansion_modified_jes"
+    BO_LEFT_BUDGET_MODIFIED_JES = "bo_left_budget_modified_jes"
     CHINCHILLA_APPROACH1 = "chinchilla_approach1"
     CHINCHILLA_APPROACH2 = "chinchilla_approach2"
     CHINCHILLA_GEMSTONES = "chinchilla_gemstones"
@@ -29,7 +31,14 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
     def get_optimizer(optimizer_name: OptimizerEnum, root_dir, max_evaluation_flops, max_flops, seed = 1, use_priors = False) -> tuple[Callable[..., Any] | CustomOptimizer, dict[str, Any]]:
         kwargs = {}
         match optimizer_name:
-            case OptimizerEnum.BO_SPACE_EXPANSION_MES | OptimizerEnum.BO_SPACE_EXPANSION_EI | OptimizerEnum.BO_SPACE_EXPANSION_JES: 
+            case (OptimizerEnum.BO_SPACE_EXPANSION_MES | OptimizerEnum.BO_SPACE_EXPANSION_EI
+                  | OptimizerEnum.BO_SPACE_EXPANSION_JES | OptimizerEnum.BO_SPACE_EXPANSION_MODIFIED_JES):
+                _acq_se = {
+                    OptimizerEnum.BO_SPACE_EXPANSION_MES: "IT-MES",
+                    OptimizerEnum.BO_SPACE_EXPANSION_EI: "EI",
+                    OptimizerEnum.BO_SPACE_EXPANSION_JES: "IT-JES",
+                    OptimizerEnum.BO_SPACE_EXPANSION_MODIFIED_JES: "IT-modified-JES",
+                }
                 return lambda space: bo_guided_scaling(
                     space,
                     params_estimator=param_estimator,
@@ -40,11 +49,20 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     device='cpu',
                     use_priors=use_priors,
                     sampling_strategy="space_expansion",
-                    acquisition_func_type="IT-MES" if optimizer_name == OptimizerEnum.BO_SPACE_EXPANSION_MES else ("EI" if optimizer_name == OptimizerEnum.BO_SPACE_EXPANSION_EI else "IT-JES"),
+                    acquisition_func_type=_acq_se[optimizer_name],
                     cost_aware="log" if optimizer_name == OptimizerEnum.BO_SPACE_EXPANSION_EI_COST_AWARE else False,
                 ), kwargs
-        
-            case OptimizerEnum.BO_LEFT_BUDGET_MES | OptimizerEnum.BO_LEFT_BUDGET_EI | OptimizerEnum.BO_LEFT_BUDGET_JES | OptimizerEnum.BO_LEFT_BUDGET_ZERO_MEAN_EI:
+
+            case (OptimizerEnum.BO_LEFT_BUDGET_MES | OptimizerEnum.BO_LEFT_BUDGET_EI
+                  | OptimizerEnum.BO_LEFT_BUDGET_JES | OptimizerEnum.BO_LEFT_BUDGET_ZERO_MEAN_EI
+                  | OptimizerEnum.BO_LEFT_BUDGET_MODIFIED_JES):
+                _acq_lb = {
+                    OptimizerEnum.BO_LEFT_BUDGET_MES: "IT-MES",
+                    OptimizerEnum.BO_LEFT_BUDGET_EI: "EI",
+                    OptimizerEnum.BO_LEFT_BUDGET_ZERO_MEAN_EI: "EI",
+                    OptimizerEnum.BO_LEFT_BUDGET_JES: "IT-JES",
+                    OptimizerEnum.BO_LEFT_BUDGET_MODIFIED_JES: "IT-modified-JES",
+                }
                 return lambda space: bo_guided_scaling(
                     space,
                     params_estimator=param_estimator,
@@ -56,11 +74,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     use_gp_scaling_mean=optimizer_name != OptimizerEnum.BO_LEFT_BUDGET_ZERO_MEAN_EI,
                     device='cpu',
                     sampling_strategy="left_budget_contraction",
-                    acquisition_func_type="IT-MES" if optimizer_name == OptimizerEnum.BO_LEFT_BUDGET_MES 
-                                else (
-                                    "EI" if optimizer_name in [OptimizerEnum.BO_LEFT_BUDGET_EI, OptimizerEnum.BO_LEFT_BUDGET_ZERO_MEAN_EI]
-                                        else "IT-JES"
-                                    ),
+                    acquisition_func_type=_acq_lb[optimizer_name],
                 ), kwargs
         
         

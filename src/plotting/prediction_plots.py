@@ -2107,16 +2107,16 @@ if __name__ == "__main__":
         BenchmarkEnum.LLM.value,
         # BenchmarkEnum.TABPFN.value,
     ]
-    optimizers_dict = {
-        "random_search": all_seeds,
-        "random_search_with_priors": all_seeds,
-        "chinchilla_approach1": all_seeds,
-        "chinchilla_approach1_with_priors": all_seeds,
-        "chinchilla_approach2": all_seeds,
-        "chinchilla_approach2_with_priors": all_seeds,
-        "carbs": all_seeds,
-        "carbs_with_priors": all_seeds,
-    }
+    # optimizers_dict = {
+    #     "random_search": all_seeds,
+    #     "random_search_with_priors": all_seeds,
+    #     "chinchilla_approach1": all_seeds,
+    #     "chinchilla_approach1_with_priors": all_seeds,
+    #     "chinchilla_approach2": all_seeds,
+    #     "chinchilla_approach2_with_priors": all_seeds,
+    #     "carbs": all_seeds,
+    #     "carbs_with_priors": all_seeds,
+    # }
 
     print(f"\n{'='*60}")
     print("Generating the predicted loss across all benchmarks...")
@@ -2133,7 +2133,7 @@ if __name__ == "__main__":
             target_flop_per_benchmark=target_flop_per_benchmark,
             flop_ranges_per_benchmark=acc_pred_flop_ranges_per_benchmark,
             true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
-            # return_split=False,
+            return_split=False,
         )
     pred_loss_comp_all.savefig(plots_dir / "pred_loss_comp_all.pdf", dpi=300, bbox_inches="tight")
     plt.close(pred_loss_comp_all)
@@ -2153,7 +2153,7 @@ if __name__ == "__main__":
             target_flop_per_benchmark=target_flop_per_benchmark,
             flop_ranges_per_benchmark=acc_pred_flop_ranges_per_benchmark,
             true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
-            # return_split=False,
+            return_split=False,
         )
     pred_n_param_comp_all.savefig(plots_dir / "pred_n_param_comp_all.pdf", dpi=300, bbox_inches="tight")
     plt.close(pred_n_param_comp_all)

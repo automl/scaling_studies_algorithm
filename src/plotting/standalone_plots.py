@@ -2825,7 +2825,7 @@ if __name__ == '__main__':
     benchmarks = [
         BenchmarkEnum.OPENCLIP.value, 
         BenchmarkEnum.LLM.value,
-        BenchmarkEnum.TABPFN.value,
+        # BenchmarkEnum.TABPFN.value,
     ]
 
     pareto_merged = {}
