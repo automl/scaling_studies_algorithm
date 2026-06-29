@@ -8,6 +8,7 @@ from src.scaling_law_fit import fit_power_law, predict_from_loglog_fit
 
 class HPPredictorTypes(Enum):
     LINEAR_REGRESSION = "Linear Regression"
+    GP_POSTERIOR = "GP Posterior"
 
 
 def _build_pareto_indices(
@@ -48,6 +49,8 @@ def predict_hp_from_scaling_law(
     configs: list[dict[str, Any]],
     losses: list[float],
     flops: list[float],
+    *,
+    cost_estimator: Any = None,
 ) -> dict[str, Any]:
     if len(configs) != len(losses) or len(configs) != len(flops):
         raise ValueError("configs, losses, and flops must have the same length")
@@ -110,5 +113,26 @@ def predict_hp_from_scaling_law(
             "pareto_flops": pareto_flops,
             "pareto_losses": pareto_losses,
         }
-    else:
-        raise ValueError(f"Unsupported HP predictor type: {hp_predictor_type}")
+
+    if hp_predictor_type == HPPredictorTypes.GP_POSTERIOR:
+        if cost_estimator is None:
+            raise ValueError("cost_estimator is required for GP_POSTERIOR predictor")
+        from src.gp_posterior_predictor import predict_from_gp_posterior
+        best_config, predicted_loss, info = predict_from_gp_posterior(
+            space=space,
+            configs=configs,
+            losses=losses,
+            cost_estimator=cost_estimator,
+            target_flop=target_flops,
+        )
+        return {
+            "extrapolated_config": best_config,
+            "predicted_loss": predicted_loss,
+            "gp_posterior_info": info,
+            "pareto_ids": [],
+            "pareto_configs": [],
+            "pareto_flops": [],
+            "pareto_losses": [],
+        }
+
+    raise ValueError(f"Unsupported HP predictor type: {hp_predictor_type}")

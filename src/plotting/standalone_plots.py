@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Any, cast
 import json
@@ -26,6 +27,8 @@ from src.plotting.utils import (
     _replot_lines,
     split_by_priors,
 )
+
+logging.getLogger("fontTools").setLevel(logging.WARNING)
 
 plt.rcParams.update({
     "font.family": "serif",

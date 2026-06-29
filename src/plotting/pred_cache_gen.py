@@ -58,13 +58,12 @@ if __name__ == "__main__":
         optimizers=optimizers,
         target_flop_per_benchmark=target_flop_per_benchmark,
         loss_predictor_types=[
-            LossPredictorTypes.KAPLAN,
-            LossPredictorTypes.CHINCHILLA3,
+            LossPredictorTypes.GP_POSTERIOR,
         ],
         nparam_predictor_types=[
-            ScaleParamPredictorTypes.CHINCHILLA3,
-            ScaleParamPredictorTypes.POWER_LAW_FIT,
+            ScaleParamPredictorTypes.GP_POSTERIOR,
         ],
+        
         key_to_extract="cost",
         loss_key=loss_key,
     )

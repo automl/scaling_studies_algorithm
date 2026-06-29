@@ -1,12 +1,18 @@
 from src.benchmarks.configs import get_benchmark, BenchmarkEnum
 from src.extrapolate import load_or_generate_pareto_info
 from pathlib import Path
+from neps.space.neps_spaces.neps_space import convert_neps_to_classic_search_space
+
 
 acc_flop_ranges_per_benchmark = {
     BenchmarkEnum.OPENCLIP.value: (4e16, get_benchmark(BenchmarkEnum.OPENCLIP.value, False).max_evaluation_flops * 0.9),
     BenchmarkEnum.LLM.value: (5.1e18, get_benchmark(BenchmarkEnum.LLM.value, False).max_evaluation_flops * 0.9),
     BenchmarkEnum.TABPFN.value: (1e17, get_benchmark(BenchmarkEnum.TABPFN.value, False).max_evaluation_flops * 0.9),
 }
+
+search_space_per_benchmark = {bench.value: convert_neps_to_classic_search_space(get_benchmark(bench.value, False).space) for bench in BenchmarkEnum}
+cost_estimator_per_benchmark = {bench.value: get_benchmark(bench.value, False).flops_estimator for bench in BenchmarkEnum}
+params_estimator_per_benchmark = {bench.value: get_benchmark(bench.value, False).params_estimator for bench in BenchmarkEnum}
 
 acc_pred_flop_ranges_per_benchmark = {
     BenchmarkEnum.OPENCLIP.value: (4e16, get_benchmark(BenchmarkEnum.OPENCLIP.value, False).max_evaluation_flops * 0.9),
@@ -85,12 +91,12 @@ optimizers_dict = {
     # "bo_space_expansion_ei": all_seeds,
     # "bo_space_expansion_jes": all_seeds,
     # "bo_left_budget": all_seeds,
-    "bo_left_budget_ei": all_seeds,
-    "bo_left_budget_jes": all_seeds,
-    "bo_left_budget_mes": all_seeds,
+    # "bo_left_budget_ei": all_seeds,
+    # "bo_left_budget_jes": all_seeds,
+    # "bo_left_budget_mes": all_seeds,
     # "bo_left_budget_with_priors": all_seeds,
     # "bo_left_budget_zero_mean_ei": all_seeds,
     # "bo_left_budget_zero_mean_ei_with_priors": all_seeds,
-    "bo_space_expansion_modified_jes": all_seeds,
+    # "bo_space_expansion_modified_jes": all_seeds,
     "bo_left_budget_modified_jes": all_seeds,
 }

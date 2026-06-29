@@ -2,8 +2,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, cast, Callable
 import json
+import logging
 from copy import deepcopy
 from dataclasses import asdict
+
+logging.getLogger("fontTools").setLevel(logging.WARNING)
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -121,6 +124,7 @@ def _load_or_compute_trajectory(
             pass
     pred_values = compute_fn()
     try:
+        # raise ValueError(f"avoid cache generation for now")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(cache_path, pred_values=pred_values, n_trials=np.array(n_trials))
     except Exception as e:
@@ -151,6 +155,8 @@ def plot_predicted_loss_over_flops(
     normalized_flops: bool = True,
     y_clip_quantile: float | None = 0.99,
     abs_loss_diff: bool = False,
+    cost_estimator: Any = None,
+    search_space: Any = None,
 ) -> Any:
     """Plot predicted loss over cumulative FLOPs using trial prefixes."""
     if target_flop <= 0:
@@ -211,6 +217,7 @@ def plot_predicted_loss_over_flops(
             predictor_slug = str(getattr(predictor_type, "value", None) or getattr(predictor_type, "name", None) or str(predictor_type))
             _loss_cache_path = _get_prediction_cache_path(base_path, opt_name, seed, predictor_slug, target_flop, "loss")
             _rows_snap = rows
+            _configs_snap = _configs
 
             def _compute_loss_preds():
                 _preds: list[float] = []
@@ -221,6 +228,9 @@ def plot_predicted_loss_over_flops(
                             target_flop=target_flop,
                             rows=_rows_snap[:_n],
                             best_loss_guess=best_loss_guess,
+                            space=search_space,
+                            configs=_configs_snap,
+                            cost_estimator=cost_estimator,
                         )
                         if _n == len(_rows_snap):
                             _fpath = base_path / "plots" / predictor_slug / opt_name / f"seed_{seed}" / "final_prediction_info.json"
@@ -817,6 +827,9 @@ def plot_predicted_n_param_over_flops(
     normalized_flops: bool = True,
     y_clip_quantile: float | None = 0.99,
     abs_param_diff: bool = False,
+    cost_estimator: Any = None,
+    params_estimator: Any = None,
+    search_space: Any = None,
 ) -> Any:
     """Plot predicted n_param over cumulative FLOPs using trial prefixes."""
     if target_flop <= 0:
@@ -908,6 +921,7 @@ def plot_predicted_n_param_over_flops(
             _nparam_predictor_slug = str(getattr(predictor_type, "value", None) or getattr(predictor_type, "name", None) or str(predictor_type))
             _nparam_cache_path = _get_prediction_cache_path(base_path, opt_name, seed, _nparam_predictor_slug, target_flop, "nparam")
             _source_rows_snap = source_rows
+            _configs_snap = _configs
 
             def _compute_nparam_preds():
                 _preds: list[float] = []
@@ -918,10 +932,15 @@ def plot_predicted_n_param_over_flops(
                             target_flop=target_flop,
                             rows=_source_rows_snap[:_n],
                             best_loss_guess=best_loss_guess,
+                            space=search_space,
+                            configs=_configs_snap,
+                            cost_estimator=cost_estimator,
+                            params_estimator=params_estimator,
                         )
                         _preds.append(float(_n_param))
-                    except Exception:
+                    except Exception as _e:
                         _preds.append(np.nan)
+                print(f"[nparam predictor] {opt_name}/seed_{seed}/{_nparam_predictor_slug} {_preds}")
                 return np.asarray(_preds, dtype=float)
 
             try:
@@ -1237,6 +1256,8 @@ def plot_predicted_loss_composite_across_benchmarks(
     optimizers: dict[str, list[int]] | dict[str, list[int | str]],
     target_flop_per_benchmark: dict[str, float],
     true_pareto_info_per_benchmark: dict[str, dict],
+    cost_estimator_per_benchmark: dict[str, Any],
+    search_space_per_benchmark: dict[str, Any],
     predictor_type: Any = None,
     key_to_extract: str | None = None,
     loss_key: str = "objective_to_minimize",
@@ -1272,6 +1293,8 @@ def plot_predicted_loss_composite_across_benchmarks(
             
             true_info = true_pareto_info_per_benchmark[benchmark_name]
             target_flop = target_flop_per_benchmark[benchmark_name]
+            cost_estimator=cost_estimator_per_benchmark[benchmark_name]
+            search_space=search_space_per_benchmark[benchmark_name]
             fig_bench, ax_bench = cast(tuple[Any, Any], plot_predicted_loss_over_flops(
                 base_path=benchmark_path,
                 optimizers=optimizers,
@@ -1285,6 +1308,8 @@ def plot_predicted_loss_composite_across_benchmarks(
                 true_pareto_info=true_info,
                 normalized_flops=False,
                 return_split=False,
+                cost_estimator=cost_estimator,
+                search_space=search_space,
             ))
 
             letter = string.ascii_lowercase[idx + 1]
@@ -1462,6 +1487,9 @@ def plot_predicted_n_param_composite_across_benchmarks(
     optimizers: dict[str, list[int]] | dict[str, list[int | str]],
     target_flop_per_benchmark: dict[str, float],
     true_pareto_info_per_benchmark: dict[str, dict],
+    cost_estimator_per_benchmark: dict[str, Any],
+    search_space_per_benchmark: dict[str, Any],
+    params_estimator_per_benchmark: dict[str, Any],
     predictor_type: Any = None,
     key_to_extract: str | None = None,
     loss_key: str = "objective_to_minimize",
@@ -1495,6 +1523,9 @@ def plot_predicted_n_param_composite_across_benchmarks(
 
             true_info = true_pareto_info_per_benchmark[benchmark_name]
             target_flop = target_flop_per_benchmark[benchmark_name]
+            cost_estimator=cost_estimator_per_benchmark[benchmark_name]
+            search_space=search_space_per_benchmark[benchmark_name]
+            params_estimator=params_estimator_per_benchmark[benchmark_name]
             fig_bench, ax_bench = cast(tuple[Any, Any], plot_predicted_n_param_over_flops(
                 base_path=benchmark_path,
                 optimizers=optimizers,
@@ -1509,6 +1540,9 @@ def plot_predicted_n_param_composite_across_benchmarks(
                 normalized_flops=False,
                 return_split=False,
                 y_clip_quantile=y_clip_quantile,
+                cost_estimator=cost_estimator,
+                search_space=search_space,
+                params_estimator=params_estimator,
             ))
 
             letter = string.ascii_lowercase[idx + 1]
@@ -1857,10 +1891,10 @@ if __name__ == "__main__":
     bench_confs, true_pareto_info_per_benchmark, acc_pred_flop_ranges_per_benchmark_by_ratio,\
         hp_target_flop_ratios, target_flop_per_benchmark, flop_range_to_show_in_pareto_per_benchmark, \
             selected_best_seed_per_benchmark, acc_pred_flop_ranges_per_benchmark, acc_flop_ranges_per_benchmark, \
-            all_seeds, results_dir, optimizers_dict, loss_key
+            all_seeds, results_dir, optimizers_dict, loss_key, search_space_per_benchmark, cost_estimator_per_benchmark, params_estimator_per_benchmark
     
     benchmarks = [
-        BenchmarkEnum.OPENCLIP.value, 
+        # BenchmarkEnum.OPENCLIP.value, 
         BenchmarkEnum.LLM.value,
         # BenchmarkEnum.TABPFN.value,
     ]
@@ -1880,15 +1914,8 @@ if __name__ == "__main__":
         targets = {
             BenchmarkEnum.LLM.value: LLM_TARGETS, 
             BenchmarkEnum.OPENCLIP.value: OPENCLIP_TARGETS,
-            BenchmarkEnum.TABPFN.value: TABPFN_TARGETS,
+            # BenchmarkEnum.TABPFN.value: TABPFN_TARGETS,
         }
-        # for target in targets[benchmark_name]:
-        #     try:
-        #         target = target.value
-        #     except AttributeError:
-        #         pass
-        #     loss_key = f"extra.predictions.{target}.mean"
-            # Create output directory
         plot_output_dir = results_dir / benchmark_name / "plots"
         plot_output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -1899,13 +1926,15 @@ if __name__ == "__main__":
         target_flop = target_flop_per_benchmark[benchmark_name]
 
         for predictor_type in [
-            LossPredictorTypes.KAPLAN, 
-            LossPredictorTypes.CHINCHILLA3,
+            # LossPredictorTypes.KAPLAN, 
+            # LossPredictorTypes.CHINCHILLA3,
+            LossPredictorTypes.GP_POSTERIOR,
             ]:
             predictor_slug = predictor_type.value.lower().replace(" ", "_")
             print(f"  Plotting {predictor_type.value} predicted loss at FLOP: {target_flop_per_benchmark[benchmark_name]:.2e} over cumulative FLOPs...")
             selcted_seed = selected_best_seed_per_benchmark[benchmark_name]
-            for across_seeds in [True, False]:
+            # for across_seeds in [True, False]:
+            for across_seeds in [True]:
                 if across_seeds:
                     (fig_pred_all, _)= plot_predicted_loss_over_flops(
                         base_path=results_dir / benchmark_name,
@@ -1920,6 +1949,8 @@ if __name__ == "__main__":
                         return_split=False,
                         normalized_flops=False,
                         abs_loss_diff=True,
+                        cost_estimator=cost_estimator_per_benchmark[benchmark_name],
+                        search_space=search_space_per_benchmark[benchmark_name],
                     )
                     avg_predicted_loss_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_pred_all, _)
                     fig_pred_all.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_all_{target_flop:.2e}.pdf", dpi=300, bbox_inches="tight")
@@ -1941,6 +1972,8 @@ if __name__ == "__main__":
                             true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
                             return_split=False,
                             normalized_flops=False,
+                            cost_estimator=cost_estimator_per_benchmark[benchmark_name],
+                        search_space=search_space_per_benchmark[benchmark_name],
                         )
                         if seed == selcted_seed:
                             predicted_loss_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_pred_all, _)
@@ -1948,13 +1981,15 @@ if __name__ == "__main__":
                         plt.close(fig_pred_all)
                         print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_all_{seed}_{target_flop:.2e}.pdf'}")
         for predictor_type in [
-            ScaleParamPredictorTypes.CHINCHILLA3, 
-            ScaleParamPredictorTypes.POWER_LAW_FIT
+            # ScaleParamPredictorTypes.CHINCHILLA3, 
+            # ScaleParamPredictorTypes.POWER_LAW_FIT,
+            ScaleParamPredictorTypes.GP_POSTERIOR
             ]:
             selcted_seed = selected_best_seed_per_benchmark[benchmark_name]
             predictor_slug = predictor_type.value.lower().replace(" ", "_")
             print(f"  Plotting {predictor_type.value} predicted n_param at FLOP: {target_flop_per_benchmark[benchmark_name]:.2e} over cumulative FLOPs...")
-            for across_seeds in [True, False]:
+            # for across_seeds in [True, False]:
+            for across_seeds in [True]:
                 if across_seeds:
                     (fig_nparam_all, _) = plot_predicted_n_param_over_flops(
                         base_path=results_dir / benchmark_name,
@@ -1969,6 +2004,9 @@ if __name__ == "__main__":
                         return_split=False,
                         normalized_flops=False,
                         abs_param_diff=True,
+                        cost_estimator=cost_estimator_per_benchmark[benchmark_name],
+                        search_space=search_space_per_benchmark[benchmark_name],
+                        params_estimator=params_estimator_per_benchmark[benchmark_name]
                     )
                     avg_predicted_params_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_nparam_all, _)
                     output_path = plot_output_dir / f"{predictor_slug}_predicted_n_param_all_{target_flop:.2e}.pdf"
@@ -1990,6 +2028,9 @@ if __name__ == "__main__":
                             true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
                             return_split=False,
                             normalized_flops=False,
+                            cost_estimator=cost_estimator_per_benchmark[benchmark_name],
+                            search_space=search_space_per_benchmark[benchmark_name],
+                            params_estimator=params_estimator_per_benchmark[benchmark_name]
                         )
                         if seed == selcted_seed:
                             predicted_params_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_nparam_all, _)
@@ -1997,13 +2038,13 @@ if __name__ == "__main__":
                         fig_nparam_all.savefig(output_path, dpi=300, bbox_inches="tight")
                         plt.close(fig_nparam_all)
 
-
+        continue
         model_size_predictors_to_compare = list(ScaleParamPredictorTypes)
         target_flop = target_flop_per_benchmark[benchmark_name]
 
         loss_predictors_to_compare = list(LossPredictorTypes)
 
-        for optimizer in ["chinchilla_approach1", "carbs"]:
+        for optimizer in ["chinchilla_approach1", "carbs", "bo_space_expansion_modified_jes", "bo_left_budget_modified_jes"]:
             fig_loss_comp, ax_loss_comp = plot_loss_predictor_comparison_for_optimizer(
                 base_path=results_dir / benchmark_name,
                 optimizer_name=optimizer,
@@ -2024,7 +2065,7 @@ if __name__ == "__main__":
             print(f"    ✓ Saved: {plot_output_dir / loss_comp_filename}")
 
         print(f"  Plotting n_param predictor comparison for Chinchilla A1...")
-        for optimizer in ["chinchilla_approach1", "carbs"]:
+        for optimizer in ["chinchilla_approach1", "carbs", "bo_space_expansion_modified_jes", "bo_left_budget_modified_jes"]:
             fig_comp, ax_comp = plot_n_param_predictor_comparison_for_optimizer(
                 base_path=results_dir / benchmark_name,
                 optimizer_name=optimizer,
@@ -2056,67 +2097,62 @@ if __name__ == "__main__":
     from src.plotting.utils import merge_pareto_plots, merge_split_composite_plots
 
     
+    if loss_predictor_comparison_merged:
+        for optimizer in loss_predictor_comparison_merged:
+            opt_comparision = loss_predictor_comparison_merged[optimizer]
+            loss_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
+            loss_predictor_comp_master_fig.savefig(plots_dir / f"loss_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
+            plt.close(loss_predictor_comp_master_fig)
+            print(f"✓ Saved: {plots_dir / f'loss_predictor_comparison_{optimizer}_composite_all.pdf'}")
+    if n_param_predictor_comparison_merged:
+        for optimizer in n_param_predictor_comparison_merged:
+            opt_comparision = n_param_predictor_comparison_merged[optimizer]
+            n_param_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
+            n_param_predictor_comp_master_fig.savefig(plots_dir / f"n_param_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
+            plt.close(n_param_predictor_comp_master_fig)
+            print(f"✓ Saved: {plots_dir / f'n_param_predictor_comparison_{optimizer}_composite_all.pdf'}")
 
-    for optimizer in loss_predictor_comparison_merged:
-        opt_comparision = loss_predictor_comparison_merged[optimizer]
-        loss_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
-        loss_predictor_comp_master_fig.savefig(plots_dir / f"loss_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
-        plt.close(loss_predictor_comp_master_fig)
-        print(f"✓ Saved: {plots_dir / f'loss_predictor_comparison_{optimizer}_composite_all.pdf'}")
+    
+    if avg_predicted_loss_merged:
+        for pred_type in avg_predicted_loss_merged:
+            res = avg_predicted_loss_merged[pred_type]
+            avg_pred_loss_master_fig, _ = merge_pareto_plots(res)
+            avg_pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_avg_predicted_loss_composite_all.pdf", dpi=300, bbox_inches="tight")
+            plt.close(avg_pred_loss_master_fig)
+            print(f"✓ Saved: {plots_dir / f'{pred_type}_avg_predicted_loss_composite_all.pdf'}")
 
-    for optimizer in n_param_predictor_comparison_merged:
-        opt_comparision = n_param_predictor_comparison_merged[optimizer]
-        n_param_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
-        n_param_predictor_comp_master_fig.savefig(plots_dir / f"n_param_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
-        plt.close(n_param_predictor_comp_master_fig)
-        print(f"✓ Saved: {plots_dir / f'n_param_predictor_comparison_{optimizer}_composite_all.pdf'}")
+    if predicted_loss_merged:
+        for pred_type in predicted_loss_merged:
+            res = predicted_loss_merged[pred_type]
+            pred_loss_master_fig, _ = merge_pareto_plots(res)
+            pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_predicted_loss_composite_all.pdf", dpi=300, bbox_inches="tight")
+            plt.close(pred_loss_master_fig)
+            print(f"✓ Saved: {plots_dir / f'{pred_type}_predicted_loss_composite_all.pdf'}")
 
-    for pred_type in avg_predicted_loss_merged:
-        res = avg_predicted_loss_merged[pred_type]
-        avg_pred_loss_master_fig, _ = merge_pareto_plots(res)
-        avg_pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_avg_predicted_loss_composite_all.pdf", dpi=300, bbox_inches="tight")
-        plt.close(avg_pred_loss_master_fig)
-        print(f"✓ Saved: {plots_dir / f'{pred_type}_avg_predicted_loss_composite_all.pdf'}")
-
-    for pred_type in predicted_loss_merged:
-        res = predicted_loss_merged[pred_type]
-        pred_loss_master_fig, _ = merge_pareto_plots(res)
-        pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_predicted_loss_composite_all.pdf", dpi=300, bbox_inches="tight")
-        plt.close(pred_loss_master_fig)
-        print(f"✓ Saved: {plots_dir / f'{pred_type}_predicted_loss_composite_all.pdf'}")
-
-    for pred_type in avg_predicted_params_merged:
-        res = avg_predicted_params_merged[pred_type]
+    if avg_predicted_params_merged:
+        for pred_type in avg_predicted_params_merged:
+            res = avg_predicted_params_merged[pred_type]
         avg_pred_loss_master_fig, _ = merge_pareto_plots(res)
         avg_pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_avg_predicted_params_composite_all.pdf", dpi=300, bbox_inches="tight")
         plt.close(avg_pred_loss_master_fig)
         print(f"✓ Saved: {plots_dir / f'{pred_type}_avg_predicted_params_composite_all.pdf'}")
 
-    for pred_type in predicted_params_merged:
-        res = predicted_params_merged[pred_type]
-        pred_loss_master_fig, _ = merge_pareto_plots(res)
-        pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_predicted_params_composite_all.pdf", dpi=300, bbox_inches="tight")
-        plt.close(pred_loss_master_fig)
+    if predicted_params_merged:
+        for pred_type in predicted_params_merged:
+            res = predicted_params_merged[pred_type]
+            pred_loss_master_fig, _ = merge_pareto_plots(res)
+            pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_predicted_params_composite_all.pdf", dpi=300, bbox_inches="tight")
+            plt.close(pred_loss_master_fig)
         print(f"✓ Saved: {plots_dir / f'{pred_type}_predicted_params_composite_all.pdf'}")
 
-    # raise Exception("")
-    
+    raise Exception("")
 
     benchmarks = [
-        BenchmarkEnum.OPENCLIP.value, 
+        # BenchmarkEnum.OPENCLIP.value, 
         BenchmarkEnum.LLM.value,
         # BenchmarkEnum.TABPFN.value,
     ]
-    # optimizers_dict = {
-    #     "random_search": all_seeds,
-    #     "random_search_with_priors": all_seeds,
-    #     "chinchilla_approach1": all_seeds,
-    #     "chinchilla_approach1_with_priors": all_seeds,
-    #     "chinchilla_approach2": all_seeds,
-    #     "chinchilla_approach2_with_priors": all_seeds,
-    #     "carbs": all_seeds,
-    #     "carbs_with_priors": all_seeds,
-    # }
+
 
     print(f"\n{'='*60}")
     print("Generating the predicted loss across all benchmarks...")
@@ -2124,12 +2160,11 @@ if __name__ == "__main__":
             base_path=results_dir,
             benchmarks=benchmarks,
             optimizers=optimizers_dict,
-            # target_flop=target_flop_per_benchmark,
             predictor_type=LossPredictorTypes.CHINCHILLA3,
+            cost_estimator_per_benchmark=cost_estimator_per_benchmark,
+            search_space_per_benchmark=search_space_per_benchmark,
             key_to_extract="cost",
             loss_key="objective_to_minimize",
-            # figsize=figsize,
-            # title=title,
             target_flop_per_benchmark=target_flop_per_benchmark,
             flop_ranges_per_benchmark=acc_pred_flop_ranges_per_benchmark,
             true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
@@ -2151,6 +2186,9 @@ if __name__ == "__main__":
             # figsize=figsize,
             # title=title,
             target_flop_per_benchmark=target_flop_per_benchmark,
+            search_space_per_benchmark=search_space_per_benchmark,
+            cost_estimator_per_benchmark=cost_estimator_per_benchmark,
+            params_estimator_per_benchmark=params_estimator_per_benchmark,
             flop_ranges_per_benchmark=acc_pred_flop_ranges_per_benchmark,
             true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
             return_split=False,

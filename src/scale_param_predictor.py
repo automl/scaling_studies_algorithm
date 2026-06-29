@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import cast
+from typing import Any, cast
 import numpy as np
 
 from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer
@@ -17,6 +17,7 @@ class ScaleParamPredictorTypes(Enum):
 
     POWER_LAW_FIT = ("Direct $N$", "#1f77b4")
     CHINCHILLA3 = ("Derived $N$", "#ff7f0e")
+    GP_POSTERIOR = ("GP Posterior", "#2ca02c")
 
 @dataclass
 class ScaleParamFitInfo:
@@ -179,8 +180,12 @@ def predict_scale_parameters(
     *,
     rows: list[tuple[float, float, float, float]] | list[list[tuple[float, float, float, float]]],
     best_loss_guess: float,
+    space: Any = None,
+    configs: list[dict] | None = None,
+    cost_estimator: Any = None,
+    params_estimator: Any = None,
 ) -> tuple[tuple[float, float], ScaleParamFitInfo | ScaleParamChinchillaFitInfo]:
-    """Predict loss for a single rows set and return the scalar prediction plus fit info."""
+    """Predict scale parameters for a single rows set and return the scalar prediction plus fit info."""
 
     if predictor_type == ScaleParamPredictorTypes.POWER_LAW_FIT:
         rows_for_fit, _all_rows = prepare_rows_for_scale_param_prediction(rows)
@@ -301,7 +306,33 @@ def predict_scale_parameters(
             raise ValueError("Could not derive positive optimal N and D from Chinchilla fit")
 
         return (n_target, d_target), ScaleParamChinchillaFitInfo(a=a, b=b)
-        
+
+    if predictor_type == ScaleParamPredictorTypes.GP_POSTERIOR:
+        if space is None or configs is None or cost_estimator is None or params_estimator is None:
+            raise ValueError(
+                "GP_POSTERIOR requires space, configs, cost_estimator, and params_estimator kwargs"
+            )
+        from src.gp_posterior_predictor import predict_from_gp_posterior
+        flat_rows = _flatten_rows(rows) if rows else []
+        losses_from_rows = [float(r[2]) for r in flat_rows]
+        n_rows = len(flat_rows)
+        best_config, _, info = predict_from_gp_posterior(
+            space=space,
+            configs=configs[:n_rows],
+            losses=losses_from_rows,
+            cost_estimator=cost_estimator,
+            target_flop=target_flop,
+        )
+        print(f"[gp posterior predictor] best_config: {best_config}")
+        print(f"[gp posterior predictor] info: {info}")
+        n_param = float(params_estimator(**best_config))
+        print(f"[gp posterior predictor] n_param: {n_param}")
+        if not np.isfinite(n_param) or n_param <= 0:
+            raise ValueError("params_estimator returned a non-positive value for the GP-predicted config")
+        n_data = float(target_flop / (6.0 * n_param))
+        if not np.isfinite(n_data) or n_data <= 0:
+            raise ValueError("Could not derive a positive n_data from GP-predicted n_param")
+        return (n_param, n_data), info  # type: ignore[return-value]
 
     raise ValueError(f"Unknown predictor type: {predictor_type}")
 

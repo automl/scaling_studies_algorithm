@@ -74,8 +74,8 @@ if __name__ == "__main__":
         # "chinchilla_approach1_with_priors": all_seeds,
         # "chinchilla_approach2": all_seeds,
         # "chinchilla_approach2_with_priors": all_seeds,
-        "carbs": all_seeds,
-        "carbs_with_priors": all_seeds,
+        "bo_space_expansion_jes": all_seeds,
+        # "carbs_with_priors": all_seeds,
     }
 
     benchmarks = [

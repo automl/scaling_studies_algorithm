@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 import numpy as np
 
 from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer
@@ -16,6 +17,7 @@ class LossPredictorTypes(Enum):
 
     KAPLAN = ("Indep. PL", "#1f77b4")
     CHINCHILLA3 = ("Joint Param.", "#ff7f0e")
+    GP_POSTERIOR = ("GP Posterior", "#2ca02c")
 
 @dataclass
 class KaplanScalingLawInfo:
@@ -35,6 +37,9 @@ def predict_loss(
     *,
     rows: list[tuple[float, float, float, float]],
     best_loss_guess: float,
+    space: Any = None,
+    configs: list[dict] | None = None,
+    cost_estimator: Any = None,
 ) -> tuple[float, KaplanScalingLawInfo | ScalingLawParameters]:
     """Predict loss for a single rows set and return the scalar prediction plus fit info."""
 
@@ -178,7 +183,22 @@ def predict_loss(
         )
 
         return predicted_loss, scaling_params
-        
+
+    if predictor_type == LossPredictorTypes.GP_POSTERIOR:
+        if space is None or configs is None or cost_estimator is None:
+            raise ValueError(
+                "GP_POSTERIOR requires space, configs, and cost_estimator kwargs"
+            )
+        from src.gp_posterior_predictor import predict_from_gp_posterior, GPPosteriorPredictionInfo
+        losses_from_rows = [float(r[2]) for r in rows]
+        _, predicted_loss, info = predict_from_gp_posterior(
+            space=space,
+            configs=configs[:len(rows)],
+            losses=losses_from_rows,
+            cost_estimator=cost_estimator,
+            target_flop=target_flop,
+        )
+        return predicted_loss, info
 
     raise ValueError(f"Unknown predictor type: {predictor_type}")
 

@@ -605,9 +605,10 @@ def merge_pareto_plots(benchmark_dict):
             clean_labels.append(l)
 
     # Apply the single legend to the bottom of the master figure
-    master_fig.legend(clean_handles, clean_labels, loc='lower center',
-                      bbox_to_anchor=(0.5, -0.2),
-                      ncol=min(4, len(clean_labels)), fontsize=15, frameon=True)
+    if clean_handles:
+        master_fig.legend(clean_handles, clean_labels, loc='lower center',
+                          bbox_to_anchor=(0.5, -0.2),
+                          ncol=min(4, len(clean_labels)), fontsize=15, frameon=True)
 
     # --- Adjust Layout ---
     plt.tight_layout()
