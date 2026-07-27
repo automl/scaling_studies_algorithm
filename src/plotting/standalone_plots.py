@@ -1,3 +1,15 @@
+import os
+import sys
+
+if sys.platform == "darwin":
+    # Avoid segfaults from conflicting OpenMP runtimes (torch/xgboost/lightgbm)
+    # and macOS's post-fork Objective-C safety check.
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+    os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+
 import logging
 from pathlib import Path
 from typing import Any, cast
@@ -10,7 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from neps.state.trial import State
 
-from src.benchmarks.configs import get_benchmark
+from src.benchmarks.configs import get_benchmark, get_predictor_type
 from src.scaling_law_fit import fit_power_law, predict_from_loglog_fit
 from src.plotting.plot_styles import BENCHMARK_TITLES
 from src.plotting.utils import (
@@ -27,6 +39,37 @@ from src.plotting.utils import (
     _replot_lines,
     split_by_priors,
 )
+
+# Empirical Pareto front computed from scripts/data.csv (loss=val/val_loss, flops=total_flops,
+# n_param=parameters), non-dominated points sorted by FLOPs. Hardcoded here since this is the
+# comprehensive ground-truth dataset, replacing the single-seed grid_search-derived front.
+_EMPIRICAL_PARETO_FLOPS = np.array([
+    10727293440.0, 15250965504.0, 29219162112.0, 46698451968.0, 46872168960.0,
+    124048359936.0, 633350240256.0, 637579564032.0, 1805750685696.0, 2316040848384.0,
+    7168117874688.0, 7892801894400.0, 14382041579520.0, 27741553582080.0, 28489145041920.0,
+    31342624558080.0, 57084027856896.0, 62903361411072.0, 66544722470400.0, 133554345581568.0,
+    228938713448448.0, 252576154598400.0, 442440100988928.0, 456389110984704.0, 459788497035264.0,
+    877991642818560.0, 1091691656832000.0, 1762967723753472.0, 1794858024357888.0, 1848333694390272.0,
+    3695874609924096.0, 7046782151347200.0, 7106065163904000.0, 2.81844992704512e+16,
+])
+_EMPIRICAL_PARETO_LOSS = np.array([
+    2.1019073362307004, 1.8585961785477896, 1.3148221568553708, 1.29471607444187, 1.1672652121051217,
+    1.1392895887547638, 1.0693727648443505, 1.0468241217458851, 1.0270189261051808, 1.0215362563806896,
+    1.002541976248419, 0.9815379456995288, 0.9795148752455134, 0.9750420943528296, 0.9692769562704294,
+    0.9633090722127235, 0.953561184771388, 0.9342086057295091, 0.9249831785006488, 0.9154967823706102,
+    0.9131693685073212, 0.907456222892506, 0.9049312442427132, 0.9009358285851098, 0.8935840906536517,
+    0.8775050381348896, 0.8697598909808827, 0.8619308802262822, 0.8547532442959588, 0.8425618700451499,
+    0.820608968657325, 0.8122687703344127, 0.8078278559475317, 0.8017667817515152,
+])
+_EMPIRICAL_PARETO_NPARAM = np.array([
+    930.0, 930.0, 6202.0, 930.0, 930.0,
+    3002.0, 930.0, 930.0, 6202.0, 3002.0,
+    6202.0, 3002.0, 10602.0, 39626.0, 19402.0,
+    10058.0, 10602.0, 5354.0, 3002.0, 3002.0,
+    37002.0, 3002.0, 141578.0, 10602.0, 10602.0,
+    73610.0, 10058.0, 73610.0, 73610.0, 37002.0,
+    37002.0, 141578.0, 277514.0, 141578.0,
+])
 
 logging.getLogger("fontTools").setLevel(logging.WARNING)
 
@@ -77,7 +120,7 @@ def _serialize_process_seed_input(
 
 
 def _get_best_loss_guess(benchmark_name: str) -> float:
-    return get_benchmark(benchmark_name, lc_aware=False).best_loss_guess
+    return get_benchmark(benchmark_name, lc_aware=False, predictor_type=get_predictor_type(), lazy=True).best_loss_guess
 
 
 def _get_log_scale_upper_clip(values: list[np.ndarray], quantile: float | None) -> float | None:
@@ -1500,7 +1543,7 @@ def plot_pareto_front_over_flops(
             #     color=data["color"],
             # )
 
-    ax.set_xlabel("Cumulative FLOPs", fontsize=20)
+    ax.set_xlabel("FLOPs", fontsize=20)
 
     benchmark_xlim: tuple[float, float] | None = None
     finite_benchmark_x = [xs[np.isfinite(xs)] for xs in scatter_x_series if len(xs) > 0]
@@ -1527,7 +1570,8 @@ def plot_pareto_front_over_flops(
         if len(true_flops) > 0:
             true_x = true_flops
 
-            # Clip true Pareto to benchmark optimizer FLOP range.
+            # Clip true Pareto to benchmark optimizer FLOP range, extended to
+            # show empirical points out to 3e16 FLOPs even beyond the optimizers' own range.
             if benchmark_xlim is not None:
                 bench_left, bench_right = benchmark_xlim
                 bench_mask = (true_x >= bench_left) & (true_x <= bench_right)
@@ -1577,6 +1621,8 @@ def plot_pareto_front_over_flops(
             ax.set_xlim(max(benchmark_xlim[0], flop_range[0]), min(benchmark_xlim[1], flop_range[1]))
         else:
             ax.set_xlim(benchmark_xlim[0], benchmark_xlim[1])
+    cur_xlim = ax.get_xlim()
+    ax.set_xlim(cur_xlim[0], max(cur_xlim[1], 5e16))
     ax.set_ylabel("Loss", fontsize=20)
     ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
     ax.set_xscale("log")
@@ -2873,7 +2919,6 @@ if __name__ == '__main__':
     pareto_master_fig.savefig(plots_dir / "selected_pareto_composite_all.pdf", dpi=300, bbox_inches="tight")
     plt.close(pareto_master_fig)
     print(f"✓ Saved: {plots_dir / 'selected_pareto_composite_all.pdf'}")
-
 
     print(f"\n{'='*60}")
     print("Generating composite loss plots across all benchmarks...")

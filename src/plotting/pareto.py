@@ -6,7 +6,7 @@ import numpy as np
 from neps.state.trial import State
 from src.benchmarks.llm_space import LLM_TARGETS
 from src.benchmarks.openclip_space import OPENCLIP_TARGETS
-from src.benchmarks.configs import BenchmarkEnum
+from src.benchmarks.configs import BenchmarkEnum, get_results_dir
 
 def find_pareto_optimal_indices(losses, costs):
     """Find indices of Pareto optimal points (minimize both loss and costs).
@@ -174,8 +174,8 @@ if __name__ == "__main__":
     # path = Path("scripts/results/openclip_grid_search/grid_search/seed_40")
     bench = BenchmarkEnum.OPENCLIP
     pathes = {
-        BenchmarkEnum.OPENCLIP:Path("/work/dlclarge1/alipourn-scan_suite/openclip/carbs"),
-        # BenchmarkEnum.LLM: Path("/work/dlclarge1/alipourn-scan_suite/llm/grid_search")
+        BenchmarkEnum.OPENCLIP: get_results_dir() / "openclip" / "carbs",
+        # BenchmarkEnum.LLM: get_results_dir() / "llm" / "grid_search"
     }
     path = pathes[bench]
     targets = ["val_loss"]

@@ -1,13 +1,21 @@
+import os
+
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+
 import argparse
 import numpy as np
 import socket
-import os
 import torch
 import random
 import neps
 
+from scan_benchmark.base_performance_benchmark import PerformancePredictorType
 from src.baselines.configs import OptimizerEnum, get_optimizer_wrapper
-from src.benchmarks.configs import get_benchmark, BenchmarkEnum
+from src.benchmarks.configs import get_benchmark, get_results_dir, set_predictor_type, BenchmarkEnum
 
 if __name__ == '__main__':
     
@@ -18,6 +26,10 @@ if __name__ == '__main__':
     parser.add_argument('--optimizer', type=str, required=True, choices=[opt.value for opt in OptimizerEnum],
                         help='Name of the optimizer to be used')
     
+    parser.add_argument('--pred', type=str, default=PerformancePredictorType.TABPFN.value,
+                        choices=[pred.value for pred in PerformancePredictorType],
+                        help='Performance predictor used by the benchmark surrogate')
+
     parser.add_argument('--seed', type=int, default=0,
                         help='Seed for reproducability')
     
@@ -25,6 +37,10 @@ if __name__ == '__main__':
                         help='Use prior for the sampling approach')
     
     args = parser.parse_args()
+
+    predictor_type = PerformancePredictorType(args.pred)
+    set_predictor_type(predictor_type)
+    results_dir = get_results_dir(predictor_type)
 
     optimizers = [
         # OptimizerEnum.BO_SPACE_EXPANSION,
@@ -39,7 +55,7 @@ if __name__ == '__main__':
 
     for optimizer_name in optimizers:
         lc_aware = optimizer_name in [OptimizerEnum.CHINCHILLA_APPROACH1.value, OptimizerEnum.CHINCHILLA_GEMSTONES.value]
-        benchmark = get_benchmark(BenchmarkEnum(args.benchmark), lc_aware=lc_aware)
+        benchmark = get_benchmark(BenchmarkEnum(args.benchmark), lc_aware=lc_aware, predictor_type=predictor_type)
         get_optimizer = get_optimizer_wrapper(
             pipeline_space=benchmark.space,
             evaluate_pipeline=benchmark.evaluate_pipeline,
@@ -58,7 +74,7 @@ if __name__ == '__main__':
             random.seed(seed)
             np.random.seed(seed)
             torch.manual_seed(seed)
-            root_dir = f"/work/dlclarge1/alipourn-scan_suite/{args.benchmark}/{optimizer_name + "_with_priors" if args.use_priors else optimizer_name}/seed_{seed}"
+            root_dir = str(results_dir / args.benchmark / f"{optimizer_name + '_with_priors' if args.use_priors else optimizer_name}" / f"seed_{seed}")
             optimizer, kwargs = get_optimizer(
                 OptimizerEnum(optimizer_name), 
                 root_dir=root_dir,

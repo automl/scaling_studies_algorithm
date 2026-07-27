@@ -1,10 +1,10 @@
 #!/bin/bash
 
-#SBATCH --partition=testdlc2_gpu-l40s
+#SBATCH --partition=ml_gpu-rtx2080
 #SBATCH --ntasks=1
 #SBATCH --gpus=1
 #SBATCH --mem=10G
-#SBATCH --job-name=grid_tab
+#SBATCH --job-name=grid3_tabpfn
 #SBATCH --output=/home/alipourn/scaling_studies_algorithm/logs/%x-%a-%j.log
 #SBATCH --error=/home/alipourn/scaling_studies_algorithm/logs/%x-%a-%j.err
 
@@ -13,7 +13,6 @@ conda activate scaling
 
 export PYTHONPATH="/home/alipourn/scaling_studies_algorithm:$PYTHONPATH"
 
-benchmark="${1:-tabpfn}"
 
 python -m src.run --optimizer grid_search --benchmark tabpfn --seed 40 &
 wait

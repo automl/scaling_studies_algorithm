@@ -637,7 +637,7 @@ class CARBSSuggester(ScalingLawGuidedOptimizer, AskFunction):
         
         # create heatmaps
         # import json
-        # with open(Path("/work/dlclarge1/alipourn-scan_suite/llm/carbs/seed_40/summary/extrapolation_results_all_ratios.json"), "r") as f:
+        # with open(Path("/work/dlc2workfs2/alipourn-scan/llm/carbs/seed_40/summary/extrapolation_results_all_ratios.json"), "r") as f:
         #     extrapolation_results_by_spent_ratio = json.load(f)
         if extrapolation_results_by_spent_ratio:
             heatmap_result = Chinchilla_Guided_Scaling._plot_interpolation_extrapolation_heatmap(extrapolation_results_by_spent_ratio)

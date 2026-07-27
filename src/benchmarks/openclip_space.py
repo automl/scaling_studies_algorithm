@@ -3,8 +3,11 @@ import copy
 
 import neps
 
-from dep.scan_bench_suite.scan_benchmark.vlm.api import VLMBenchmark, VLMConfig, VLMTarget
+from scan_benchmark.vlm.api import VLMBenchmark, VLMConfig, VLMTarget
+from scan_benchmark.base_performance_benchmark import PerformancePredictorType
 
+
+WIDTH_CHOICES = [32, 64, 128, 192, 256, 320, 384, 448, 512, 768, 1024]
 
 OPENCLIP_TARGETS = [
     VLMTarget.VAL_LOSS, 
@@ -17,8 +20,8 @@ OPENCLIP_TARGETS = [
     # VLMTarget.MNIST,
     # VLMTarget.FAIRNESS_DOLLAR_STREET,
 ]
-def get_benchmark():
-    return VLMBenchmark(targets=OPENCLIP_TARGETS)
+def get_benchmark(predictor_type: PerformancePredictorType = PerformancePredictorType.TABPFN) -> VLMBenchmark:
+    return VLMBenchmark(target=OPENCLIP_TARGETS, predictor_type=predictor_type)
 
 
 def normalize_openclip_config(raw_conf: dict) -> dict:
@@ -26,6 +29,8 @@ def normalize_openclip_config(raw_conf: dict) -> dict:
 
     - Integer dimensions are rounded to nearest valid integer and clamped.
     - Float dimensions are clamped to their valid domain bounds.
+    - `vision_width`/`text_width` are ordinal indices into WIDTH_CHOICES and are
+      resolved to their actual widths here.
     """
     conf = dict(raw_conf)
 
@@ -38,16 +43,21 @@ def normalize_openclip_config(raw_conf: dict) -> dict:
         "eps": (1.0e-8, 1.0e-6),
     }
     int_bounds = {
-        "vision_width": (0, 8),
-        "text_width": (0, 8),
-        "train_num_samples": (6e5, 6e7),
+        "vision_width": (0, len(WIDTH_CHOICES) - 1),
+        "text_width": (0, len(WIDTH_CHOICES) - 1),
+        "train_num_samples": (6e5, 2e8),
+    }
+    ordinal_choices = {
+        "vision_width": WIDTH_CHOICES,
+        "text_width": WIDTH_CHOICES,
     }
 
     for name, value in list(conf.items()):
         if name in int_bounds:
             lower_i, upper_i = int_bounds[name]
             snapped = int(round(float(value)))
-            conf[name] = min(max(snapped, lower_i), upper_i)
+            snapped = min(max(snapped, lower_i), upper_i)
+            conf[name] = ordinal_choices[name][snapped] if name in ordinal_choices else snapped
         elif name in float_bounds:
             lower_f, upper_f = float_bounds[name]
             v = float(value)
@@ -58,8 +68,6 @@ def normalize_openclip_config(raw_conf: dict) -> dict:
 def parameters_estimator_wrapper(bench: VLMBenchmark):
     def parameters_estimator(**conf):
         conf = normalize_openclip_config(conf)
-        conf["vision_width"] = int(conf["vision_width"] * 64 if conf["vision_width"] > 0 else 32)
-        conf["text_width"] = int(conf["text_width"] * 64 if conf["text_width"] > 0 else 32)
         conf["total_samples_planned"] = int(conf["train_num_samples"])
         conf["training_progress"] = 1.0
         conf.pop("train_num_samples")
@@ -91,11 +99,7 @@ def evaluate_pipeline_wrapper(bench: VLMBenchmark, lc_aware: bool = False):
         eps = normalized_conf["eps"]
         vision_width = normalized_conf["vision_width"]
         text_width = normalized_conf["text_width"]
-        train_num_samples = normalized_conf["train_num_samples"]
-
-        vision_width = vision_width * 64 if vision_width > 0 else 32
-        text_width = text_width * 64 if text_width > 0 else 32
-        train_num_samples = int(train_num_samples)
+        train_num_samples = int(normalized_conf["train_num_samples"])
         config = VLMConfig(
             lr=round(lr, 7),
             wd=round(wd, 7),
@@ -139,13 +143,13 @@ def evaluate_pipeline_wrapper(bench: VLMBenchmark, lc_aware: bool = False):
                     }
                 n_data = config.training_progress * train_num_samples # num tokens seen so far
                 flops = float(result["model_stats"]["total_flops"])
-                lc.append((n_data, flops, float(result["predictions"][VLMTarget.VAL_LOSS.value]["mean"])))
+                lc.append((n_data, flops, float(result["predictions"]["mean"])))
         config.training_progress = 1.0 # for double caution
         result = bench.query(config)
         if result["failed"]:
             print(f"Benchmark query failed with config: {config}")
         return {
-            "objective_to_minimize": float((result.get("predictions") or {}).get(VLMTarget.VAL_LOSS.value, {}).get('mean', float('nan'))), 
+            "objective_to_minimize": float((result.get("predictions") or {}).get("mean", float('nan'))),
             "cost": float(result["model_stats"]["total_flops"]), 
             "learning_curve": lc,
             "info_dict": {
@@ -161,8 +165,6 @@ def evaluate_pipeline_wrapper(bench: VLMBenchmark, lc_aware: bool = False):
 def flops_estimator_wrapper(bench: VLMBenchmark):
     def flops_estimator(**conf):
         conf = normalize_openclip_config(conf)
-        conf["vision_width"] = int(conf["vision_width"] * 64 if conf["vision_width"] > 0 else 32)
-        conf["text_width"] = int(conf["text_width"] * 64 if conf["text_width"] > 0 else 32)
         conf["total_samples_planned"] = int(conf["train_num_samples"])
         conf["training_progress"] = 1.0
         conf.pop("train_num_samples")
@@ -174,10 +176,12 @@ def flops_estimator_wrapper(bench: VLMBenchmark):
     return flops_estimator
 
 def aspect_ratio_fn(lr, wd, beta1, beta2, warmup_fraction, eps, vision_width, text_width, train_num_samples) -> float:
-    vision_width = vision_width * 64 if vision_width > 0 else 32
-    text_width = text_width * 64 if text_width > 0 else 32
-    train_num_samples = int(train_num_samples)
-    import math
+    normalized_conf = normalize_openclip_config({
+        "vision_width": vision_width,
+        "text_width": text_width,
+    })
+    vision_width = normalized_conf["vision_width"]
+    text_width = normalized_conf["text_width"]
     vision_ratio = vision_width  / 12 # constant n_layers
     text_ratio = text_width  / 12 # constant n_layers
     return vision_ratio / text_ratio
@@ -214,16 +218,16 @@ class PipelineScalingConfig(neps.PipelineSpace):
     # scale space
     train_num_samples = neps.Integer(
         lower=int(6e5),
-        upper=int(6e7),
+        upper=int(2e8),
         log=True,
         is_scaling=True,
     )
     vision_width = neps.Integer(
-        lower=0, upper=8,  # head width is set to 64 by default. Emb. dim. needs to be divisible by 64!
+        lower=0, upper=len(WIDTH_CHOICES) - 1,  # ordinal index into WIDTH_CHOICES
         is_scaling=True,
     )
     text_width = neps.Integer(
-        lower=0, upper=8,
+        lower=0, upper=len(WIDTH_CHOICES) - 1,  # ordinal index into WIDTH_CHOICES
         is_scaling=True,
     )
 
@@ -237,9 +241,9 @@ def get_macro_params_bounds(bench: VLMBenchmark) -> tuple[tuple[float, float, fl
         beta2=0.999,
         warmup_fraction=0.75,
         eps=1e-8,
-        vision_width=8,
-        text_width=8,
-        train_num_samples=int(60 * 1e6),
+        vision_width=10,
+        text_width=10,
+        train_num_samples=int(200 * 1e6),
     )
     
     min_flop_conf = dict(
@@ -273,8 +277,8 @@ def get_macro_params_bounds(bench: VLMBenchmark) -> tuple[tuple[float, float, fl
     print(f"{min_params:e} parameters, {min_data:e} data points, total flops: {min_flops:e}")
     return ((min_params, min_data, min_flops), (max_params, max_data, max_flops))
 
-# 1.020000e+08 parameters, 6.000000e+07 data points, total flops: 5.970000e+17
-# 2.000000e+06 parameters, 6.000000e+05 data points, total flops: 3.600000e+13
+# 3.569725e+08 parameters, 2.000000e+08 data points, total flops: 7.815374e+18
+# 2.013121e+06 parameters, 6.000000e+05 data points, total flops: 3.605023e+13
 def get_pipeline_space():
     space = PipelineScalingConfig()
     return space
@@ -282,19 +286,4 @@ def get_pipeline_space():
 if __name__ == '__main__':
 
     bench = get_benchmark()
-    max_flop_conf = dict(
-        lr=0.0384861,
-        wd=1.0e-6,
-        beta1=0.99,
-        beta2=0.999,
-        warmup_fraction=0.75,
-        eps=6.567e-7,
-        vision_width=2,
-        text_width=1,
-        train_num_samples=int(0.6 * 1e6),
-    )
-
-    res = evaluate_pipeline_wrapper(bench)(
-        **max_flop_conf
-    )
-    print(res)
+    get_macro_params_bounds(bench)

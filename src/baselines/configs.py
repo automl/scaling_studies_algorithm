@@ -150,7 +150,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     space,
                     use_priors=use_priors,
                     ignore_fidelity=False,
-                    constraints_func=None,
+                    constraints_func= lambda conf: flops_estimator(**conf) - 1e17
                 ), kwargs
             case _:
                 raise ValueError(f"Unknown optimizer: {optimizer_name}")

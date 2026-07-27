@@ -1,20 +1,16 @@
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, cast, Callable
+from typing import Any, cast
 import json
 import logging
-from copy import deepcopy
 from dataclasses import asdict
 
 logging.getLogger("fontTools").setLevel(logging.WARNING)
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 import string
-from dataclasses import asdict, is_dataclass
-import neps
-from neps.state.trial import State
+from dataclasses import asdict
 
 from src.scaling_law_fit import fit_power_law, predict_from_loglog_fit
 from src.benchmarks.configs import get_benchmark
@@ -63,75 +59,6 @@ plt.rcParams.update({
     "ps.fonttype": 42
 })
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _get_prediction_cache_path(
-    base_path: Path,
-    opt_name: str,
-    seed: int | str,
-    predictor_slug: str,
-    target_flop: float,
-    kind: str,
-) -> Path:
-    safe_slug = predictor_slug.replace(" ", "_").replace("/", "_")
-    return base_path / opt_name / f"seed_{seed}" / "prediction_cache" / f"{kind}_{safe_slug}_{target_flop:.2e}.npz"
-
-
-def _load_or_compute_trajectory(
-    cache_path: Path,
-    n_trials: int,
-    compute_fn,
-) -> np.ndarray:
-    """Return cached per-trial predictions or run compute_fn() and cache the result."""
-    if cache_path.exists():
-        try:
-            data = np.load(cache_path, allow_pickle=False)
-            if int(data["n_trials"]) == n_trials:
-                return data["pred_values"]
-        except Exception:
-            pass
-    pred_values = compute_fn()
-    try:
-        # raise ValueError(f"avoid cache generation for now")
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(cache_path, pred_values=pred_values, n_trials=np.array(n_trials))
-    except Exception as e:
-        print(f"Warning: could not save prediction cache to {cache_path}: {e}")
-    return pred_values
-
-
 @split_by_priors(
     lambda kw: _placeholder_plot(
         figsize=kw.get("figsize", (5.5, 3.5)),
@@ -162,7 +89,7 @@ def plot_predicted_loss_over_flops(
     if target_flop <= 0:
         raise ValueError("target_flop must be positive")
 
-    from src.loss_predictor import LossPredictorTypes, predict_loss
+    from src.loss_predictor import LossPredictorTypes, get_loss_fit_trajectory
 
     if predictor_type is None:
         predictor_type = LossPredictorTypes.KAPLAN
@@ -215,42 +142,31 @@ def plot_predicted_loss_over_flops(
             cumulative_flops = np.cumsum(trial_flops)
 
             predictor_slug = str(getattr(predictor_type, "value", None) or getattr(predictor_type, "name", None) or str(predictor_type))
-            _loss_cache_path = _get_prediction_cache_path(base_path, opt_name, seed, predictor_slug, target_flop, "loss")
-            _rows_snap = rows
-            _configs_snap = _configs
 
-            def _compute_loss_preds():
-                _preds: list[float] = []
-                for _n in range(1, len(_rows_snap) + 1):
-                    try:
-                        _loss, _info = predict_loss(
-                            predictor_type=predictor_type,
-                            target_flop=target_flop,
-                            rows=_rows_snap[:_n],
-                            best_loss_guess=best_loss_guess,
-                            space=search_space,
-                            configs=_configs_snap,
-                            cost_estimator=cost_estimator,
-                        )
-                        if _n == len(_rows_snap):
-                            _fpath = base_path / "plots" / predictor_slug / opt_name / f"seed_{seed}" / "final_prediction_info.json"
-                            try:
-                                _fpath.parent.mkdir(parents=True, exist_ok=True)
-                                with open(_fpath, "w+") as _f:
-                                    json.dump(asdict(_info), _f, indent=2)
-                                print(f"Saved final prediction info for {opt_name} seed {seed} to {_fpath}")
-                            except Exception as _e:
-                                print(f"Warning: could not save final prediction info for {opt_name} seed {seed}: {_e}")
-                        _preds.append(float(_loss))
-                    except Exception:
-                        _preds.append(np.nan)
-                return np.asarray(_preds, dtype=float)
-
+            # Fit is target_flop-independent and predictor-owned: caching lives
+            # inside get_loss_fit_trajectory, keyed by (predictor_type, n_trials).
+            _cache_dir = base_path / opt_name / f"seed_{seed}" / "prediction_cache"
+            _trajectory = get_loss_fit_trajectory(
+                predictor_type,
+                rows=rows,
+                best_loss_guess=best_loss_guess,
+                space=search_space,
+                configs=_configs,
+                cost_estimator=cost_estimator,
+                cache_dir=_cache_dir,
+            )
             x = np.asarray(cumulative_flops, dtype=float)
-            try:
-                y = _load_or_compute_trajectory(_loss_cache_path, len(rows), _compute_loss_preds)
-            except Exception:
-                y = _compute_loss_preds()
+            y = _trajectory.predict(target_flop)
+            if _trajectory.fits:
+                try:
+                    _, _info = _trajectory.fits[-1].predict(target_flop)
+                    _fpath = base_path / "plots" / predictor_slug / opt_name / f"seed_{seed}" / "final_prediction_info.json"
+                    _fpath.parent.mkdir(parents=True, exist_ok=True)
+                    with open(_fpath, "w+") as _f:
+                        json.dump(asdict(_info), _f, indent=2)
+                    print(f"Saved final prediction info for {opt_name} seed {seed} to {_fpath}")
+                except Exception as _e:
+                    print(f"Warning: could not save final prediction info for {opt_name} seed {seed}: {_e}")
             if abs_loss_diff:
                 y = np.abs(y - float(true_target_loss))
                 y = np.where(y == 0.0, np.finfo(float).tiny, y)
@@ -460,7 +376,7 @@ def plot_loss_predictor_comparison_for_optimizer(
     true_pareto_info: dict[str, list] | None = None,
 ) -> tuple[Any, Any]:
     """Plot all loss predictor types for one optimizer, aggregating over seeds."""
-    from src.loss_predictor import LossPredictorTypes, predict_loss
+    from src.loss_predictor import LossPredictorTypes, get_loss_fit_trajectory
 
     if target_flop <= 0:
         raise ValueError("target_flop must be positive")
@@ -510,29 +426,11 @@ def plot_loss_predictor_comparison_for_optimizer(
             all_positive_flops.append(positive_cumulative_flops)
 
         for p_type in predictor_types:
-            predictor_slug = str(getattr(p_type, "value", None) or getattr(p_type, "name", None) or str(p_type))
-            cache_path = _get_prediction_cache_path(base_path, optimizer_name, seed_value, predictor_slug, target_flop, "loss")
-            _rows_snap = rows
-
-            def _compute_loss(_src=_rows_snap, _pt=p_type):
-                _preds: list[float] = []
-                for _n in range(1, len(_src) + 1):
-                    try:
-                        _loss, _ = predict_loss(
-                            predictor_type=_pt,
-                            target_flop=target_flop,
-                            rows=_src[:_n],
-                            best_loss_guess=best_loss_guess,
-                        )
-                        _preds.append(float(_loss))
-                    except Exception:
-                        _preds.append(np.nan)
-                return np.asarray(_preds, dtype=float)
-
-            try:
-                pred_loss_arr = _load_or_compute_trajectory(cache_path, len(rows), _compute_loss)
-            except Exception:
-                pred_loss_arr = _compute_loss()
+            _cache_dir = base_path / optimizer_name / f"seed_{seed_value}" / "prediction_cache"
+            _trajectory = get_loss_fit_trajectory(
+                p_type, rows=rows, best_loss_guess=best_loss_guess, cache_dir=_cache_dir,
+            )
+            pred_loss_arr = _trajectory.predict(target_flop)
 
             x = np.asarray(cumulative_flops, dtype=float)
             y = np.asarray(pred_loss_arr, dtype=float)
@@ -633,6 +531,9 @@ def plot_n_param_predictor_comparison_for_optimizer(
     title: str | None = None,
     flop_range: tuple[float, float] | None = None,
     true_pareto_info: dict[str, list] | None = None,
+    search_space: Any = None,
+    cost_estimator: Any = None,
+    params_estimator: Any = None,
 ) -> tuple[Any, Any]:
     """
     Plots multiple scaling law predictors for one optimizer's trajectory.
@@ -640,8 +541,8 @@ def plot_n_param_predictor_comparison_for_optimizer(
     converge toward the truth using the same data. Multiple seeds are aggregated
     as mean with standard-error bands.
     """
-    from src.scale_param_predictor import predict_scale_parameters
-    
+    from src.scale_param_predictor import get_scale_param_fit_trajectory
+
     fig, ax = plt.subplots(figsize=figsize)
     base_path = Path(base_path)
     best_loss_guess = _get_best_loss_guess(base_path.name)
@@ -691,29 +592,18 @@ def plot_n_param_predictor_comparison_for_optimizer(
             source_rows = learning_curve_rows if use_lc else rows
             n_trials = len(source_rows)
 
-            predictor_slug = str(getattr(p_type, "value", None) or getattr(p_type, "name", None) or str(p_type))
-            cache_path = _get_prediction_cache_path(base_path, optimizer_name, seed_value, predictor_slug, target_flop, "nparam")
-            _source_snap = source_rows
-
-            def _compute(_src=_source_snap, _nt=n_trials, _pt=p_type):
-                _preds: list[float] = []
-                for _n in range(1, _nt + 1):
-                    try:
-                        (_n_param, _), _ = predict_scale_parameters(
-                            predictor_type=_pt,
-                            target_flop=target_flop,
-                            rows=_src[:_n],
-                            best_loss_guess=best_loss_guess,
-                        )
-                        _preds.append(float(_n_param))
-                    except Exception:
-                        _preds.append(np.nan)
-                return np.asarray(_preds, dtype=float)
-
-            try:
-                pred_n_params_arr = _load_or_compute_trajectory(cache_path, n_trials, _compute)
-            except Exception:
-                pred_n_params_arr = _compute()
+            _cache_dir = base_path / optimizer_name / f"seed_{seed_value}" / "prediction_cache"
+            _trajectory = get_scale_param_fit_trajectory(
+                p_type,
+                rows=source_rows,
+                best_loss_guess=best_loss_guess,
+                space=search_space,
+                configs=_configs,
+                cost_estimator=cost_estimator,
+                params_estimator=params_estimator,
+                cache_dir=_cache_dir,
+            )
+            pred_n_params_arr = _trajectory.predict(target_flop)[:, 0]
 
             pred_values = list(pred_n_params_arr)
 
@@ -790,7 +680,7 @@ def plot_n_param_predictor_comparison_for_optimizer(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Cumulative FLOPs", fontsize=20)
-    ax.set_ylabel(r"$N$", fontsize=20)
+    ax.set_ylabel("Predicted " + r"$N$", fontsize=20)
     if title: ax.set_title(title, fontsize=20)
     
     if flop_range:
@@ -835,7 +725,7 @@ def plot_predicted_n_param_over_flops(
     if target_flop <= 0:
         raise ValueError("target_flop must be positive")
 
-    from src.scale_param_predictor import ScaleParamPredictorTypes, predict_scale_parameters
+    from src.scale_param_predictor import ScaleParamPredictorTypes, get_scale_param_fit_trajectory
 
     if predictor_type is None:
         predictor_type = ScaleParamPredictorTypes.POWER_LAW_FIT
@@ -919,36 +809,19 @@ def plot_predicted_n_param_over_flops(
                 continue
 
             _nparam_predictor_slug = str(getattr(predictor_type, "value", None) or getattr(predictor_type, "name", None) or str(predictor_type))
-            _nparam_cache_path = _get_prediction_cache_path(base_path, opt_name, seed, _nparam_predictor_slug, target_flop, "nparam")
-            _source_rows_snap = source_rows
-            _configs_snap = _configs
-
-            def _compute_nparam_preds():
-                _preds: list[float] = []
-                for _n in range(1, total_trials + 1):
-                    try:
-                        (_n_param, _), _ = predict_scale_parameters(
-                            predictor_type=predictor_type,
-                            target_flop=target_flop,
-                            rows=_source_rows_snap[:_n],
-                            best_loss_guess=best_loss_guess,
-                            space=search_space,
-                            configs=_configs_snap,
-                            cost_estimator=cost_estimator,
-                            params_estimator=params_estimator,
-                        )
-                        _preds.append(float(_n_param))
-                    except Exception as _e:
-                        _preds.append(np.nan)
-                print(f"[nparam predictor] {opt_name}/seed_{seed}/{_nparam_predictor_slug} {_preds}")
-                return np.asarray(_preds, dtype=float)
-
-            try:
-                pred_n_params_arr = _load_or_compute_trajectory(_nparam_cache_path, total_trials, _compute_nparam_preds)
-                print(f"[nparam cache] HIT  {opt_name}/seed_{seed}/{_nparam_predictor_slug} @ {target_flop:.2e} ({total_trials} trials)")
-            except Exception as _cache_exc:
-                print(f"[nparam cache] MISS {opt_name}/seed_{seed}/{_nparam_predictor_slug} @ {target_flop:.2e} — {_cache_exc}")
-                pred_n_params_arr = _compute_nparam_preds()
+            _cache_dir = base_path / opt_name / f"seed_{seed}" / "prediction_cache"
+            _trajectory = get_scale_param_fit_trajectory(
+                predictor_type,
+                rows=source_rows,
+                best_loss_guess=best_loss_guess,
+                space=search_space,
+                configs=_configs,
+                cost_estimator=cost_estimator,
+                params_estimator=params_estimator,
+                cache_dir=_cache_dir,
+            )
+            pred_n_params_arr = _trajectory.predict(target_flop)[:, 0]
+            print(f"[nparam predictor] {opt_name}/seed_{seed}/{_nparam_predictor_slug} {list(pred_n_params_arr)}")
 
             x = np.asarray(cumulative_flops[:total_trials], dtype=float)
             y = np.asarray(pred_n_params_arr, dtype=float)
@@ -1264,6 +1137,8 @@ def plot_predicted_loss_composite_across_benchmarks(
     figsize: tuple[int, int] = (5.5, 3.5),
     title: str = "Predicted Loss Composite Across Benchmarks",
     flop_ranges_per_benchmark: dict[str, tuple[float, float]] | None = None,
+    abs_loss_diff: bool = False,
+    return_split: bool = False,
 ) -> Any:
     """Composite predicted-loss figures with all benchmarks + across-benchmark aggregate."""
     # Create composite figure with subplots for each benchmark + aggregate
@@ -1308,6 +1183,7 @@ def plot_predicted_loss_composite_across_benchmarks(
                 true_pareto_info=true_info,
                 normalized_flops=False,
                 return_split=False,
+                abs_loss_diff=abs_loss_diff,
                 cost_estimator=cost_estimator,
                 search_space=search_space,
             ))
@@ -1361,7 +1237,7 @@ def plot_predicted_loss_composite_across_benchmarks(
 
                 pred_xs = pred_xs[finite_mask]
                 pred_ys = pred_ys[finite_mask]
-                error_curve = np.abs(pred_ys - true_val)
+                error_curve = pred_ys if abs_loss_diff else np.abs(pred_ys - true_val)
                 norm_bounds = _get_global_flop_bounds([pred_xs])
                 if norm_bounds is None:
                     continue
@@ -1497,6 +1373,8 @@ def plot_predicted_n_param_composite_across_benchmarks(
     title: str = "Predicted n_param Composite Across Benchmarks",
     flop_ranges_per_benchmark: dict[str, tuple[float, float]] | None = None,
     y_clip_quantile: float | None = 0.99,
+    abs_param_diff: bool = False,
+    return_split: bool = False,
 ) -> Any:
     """Composite predicted-n_param figures with per-benchmark panels plus an across-benchmark ranking panel."""
     num_subplots = len(benchmarks) + 1
@@ -1540,6 +1418,7 @@ def plot_predicted_n_param_composite_across_benchmarks(
                 normalized_flops=False,
                 return_split=False,
                 y_clip_quantile=y_clip_quantile,
+                abs_param_diff=abs_param_diff,
                 cost_estimator=cost_estimator,
                 search_space=search_space,
                 params_estimator=params_estimator,
@@ -1589,7 +1468,7 @@ def plot_predicted_n_param_composite_across_benchmarks(
 
                     pred_xs = pred_xs[finite_mask]
                     pred_ys = pred_ys[finite_mask]
-                    error_curve = np.abs(pred_ys - true_val)
+                    error_curve = pred_ys if abs_param_diff else np.abs(pred_ys - true_val)
                     norm_bounds = _get_global_flop_bounds([pred_xs])
                     if norm_bounds is None:
                         continue
@@ -1706,16 +1585,21 @@ def plot_predicted_n_param_composite_across_benchmarks(
 
 
 def _warm_single_cache(args: tuple) -> str:
-    """Top-level worker: compute and save one prediction trajectory cache entry.
+    """Top-level worker: fit (and cache) one predictor's trajectory for one
+    (benchmark, optimizer, seed) combo.
 
     Must be a module-level function so ProcessPoolExecutor can pickle it.
     All heavy imports are deferred to the worker process.
+
+    Fitting is target_flop-independent (see get_loss_fit_trajectory /
+    get_scale_param_fit_trajectory / get_hp_fit_trajectory), so warming no
+    longer varies by target_flop/ratio -- each (predictor_type, n_trials) is
+    fit once here and can serve any target_flop cheaply afterward.
     """
-    (base_path_str, benchmark_name, opt_name, seed, predictor_type, target_flop,
-     kind, key_to_extract, loss_key, best_loss_guess) = args
+    (base_path_str, benchmark_name, opt_name, seed, predictor_type, kind,
+     key_to_extract, loss_key, best_loss_guess, override) = args
 
     from pathlib import Path as _Path
-    import numpy as _np
     from src.plotting.standalone_plots import process_seed as _process_seed
 
     bench_path = _Path(base_path_str) / benchmark_name
@@ -1724,23 +1608,11 @@ def _warm_single_cache(args: tuple) -> str:
         or getattr(predictor_type, "name", None)
         or str(predictor_type)
     )
-    safe_slug = predictor_slug.replace(" ", "_").replace("/", "_")
-    cache_path = (
-        bench_path / opt_name / f"seed_{seed}" / "prediction_cache"
-        / f"{kind}_{safe_slug}_{target_flop:.2e}.npz"
-    )
     tag = f"[{kind}/{predictor_slug}] {benchmark_name}/{opt_name}/seed_{seed}"
-
-    # Peek at cached n_trials without loading pred_values
-    cached_n_trials = -1
-    if cache_path.exists():
-        try:
-            cached_n_trials = int(_np.load(cache_path, allow_pickle=False)["n_trials"])
-        except Exception:
-            pass
+    cache_dir = bench_path / opt_name / f"seed_{seed}" / "prediction_cache"
 
     try:
-        _, _, _, rows, learning_curve_rows, _ = _process_seed(
+        _, _, _, rows, learning_curve_rows, configs = _process_seed(
             path=bench_path / opt_name,
             seed=seed,
             key_to_extract=key_to_extract,
@@ -1753,62 +1625,68 @@ def _warm_single_cache(args: tuple) -> str:
     if not rows:
         return f"SKIP {tag}: no rows"
 
-    trial_flops = _np.asarray([float(r[3]) for r in rows], dtype=float)
-    trial_flops = _np.where(_np.isfinite(trial_flops) & (trial_flops > 0), trial_flops, 0.0)
-    cumulative_flops = _np.cumsum(trial_flops)
+    from src.plotting.consts import (
+        search_space_per_benchmark as _spaces,
+        cost_estimator_per_benchmark as _cost_ests,
+        params_estimator_per_benchmark as _params_ests,
+    )
+    _space = _spaces[benchmark_name]
+    _cost_est = _cost_ests[benchmark_name]
+    _params_est = _params_ests[benchmark_name]
 
-    if kind == "loss":
-        from src.loss_predictor import predict_loss as _predict_loss
-        n_trials = len(rows)
-        if cached_n_trials == n_trials:
-            return f"HIT  {tag}"
-        preds: list[float] = []
-        for _n in range(1, n_trials + 1):
-            try:
-                _loss, _ = _predict_loss(
-                    predictor_type=predictor_type,
-                    target_flop=target_flop,
-                    rows=rows[:_n],
-                    best_loss_guess=best_loss_guess,
-                )
-                preds.append(float(_loss))
-            except Exception:
-                preds.append(float("nan"))
-
-    elif kind == "nparam":
-        from src.scale_param_predictor import (
-            predict_scale_parameters as _predict_scale,
-            ScaleParamPredictorTypes as _SPT,
-        )
-        use_lc = predictor_type == _SPT.POWER_LAW_FIT and len(learning_curve_rows) > 0
-        source_rows = learning_curve_rows if use_lc else rows
-        n_trials = len(cumulative_flops) if use_lc else len(rows)
-        if n_trials <= 0:
-            return f"SKIP {tag}: no trials"
-        if cached_n_trials == n_trials:
-            return f"HIT  {tag}"
-        preds = []
-        for _n in range(1, n_trials + 1):
-            try:
-                (_n_param, _), _ = _predict_scale(
-                    predictor_type=predictor_type,
-                    target_flop=target_flop,
-                    rows=source_rows[:_n],
-                    best_loss_guess=best_loss_guess,
-                )
-                preds.append(float(_n_param))
-            except Exception:
-                preds.append(float("nan"))
-
-    else:
-        return f"SKIP {tag}: unknown kind {kind!r}"
-
-    pred_values = _np.asarray(preds, dtype=float)
     try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        _np.savez(cache_path, pred_values=pred_values, n_trials=_np.array(n_trials))
+        if kind == "loss":
+            from src.loss_predictor import get_loss_fit_trajectory
+            get_loss_fit_trajectory(
+                predictor_type,
+                rows=rows,
+                best_loss_guess=best_loss_guess,
+                space=_space,
+                configs=configs,
+                cost_estimator=_cost_est,
+                cache_dir=cache_dir,
+                override=override,
+            )
+
+        elif kind == "nparam":
+            from src.scale_param_predictor import get_scale_param_fit_trajectory, ScaleParamPredictorTypes as _SPT
+            use_lc = predictor_type == _SPT.POWER_LAW_FIT and len(learning_curve_rows) > 0
+            source_rows = learning_curve_rows if use_lc else rows
+            if len(source_rows) == 0:
+                return f"SKIP {tag}: no trials"
+            get_scale_param_fit_trajectory(
+                predictor_type,
+                rows=source_rows,
+                best_loss_guess=best_loss_guess,
+                space=_space,
+                configs=configs,
+                cost_estimator=_cost_est,
+                params_estimator=_params_est,
+                cache_dir=cache_dir,
+                override=override,
+            )
+
+        elif kind == "hp":
+            from src.hp_predictor import get_hp_fit_trajectory
+            flops_list = [float(r[3]) for r in rows]
+            losses_list = [float(r[2]) for r in rows]
+            get_hp_fit_trajectory(
+                _space,
+                predictor_type,
+                configs=configs,
+                losses=losses_list,
+                flops=flops_list,
+                cost_estimator=_cost_est,
+                cache_dir=cache_dir,
+                override=override,
+            )
+
+        else:
+            return f"SKIP {tag}: unknown kind {kind!r}"
+
     except Exception as e:
-        return f"ERROR saving {tag}: {e}"
+        return f"ERROR {tag}: {e}"
+
     return f"DONE {tag}"
 
 
@@ -1817,53 +1695,71 @@ def warm_prediction_cache(
     base_path: str | Path,
     benchmarks: list[str],
     optimizers: dict[str, list[int | str]],
-    target_flop_per_benchmark: dict[str, float],
     loss_predictor_types: list[Any] | None = None,
     nparam_predictor_types: list[Any] | None = None,
+    hp_predictor_types: list[Any] | None = None,
     key_to_extract: str | None = "cost",
     loss_key: str = "objective_to_minimize",
+    override: bool = False,
 ) -> None:
-    """Pre-warm the prediction cache for all (benchmark, optimizer, seed, predictor) combos.
+    """Pre-warm the prediction fit cache for all (benchmark, optimizer, seed, predictor) combos.
+
+    Fitting is target_flop-independent (see get_loss_fit_trajectory /
+    get_scale_param_fit_trajectory / get_hp_fit_trajectory), so warming no
+    longer sweeps a target_flop/ratio axis -- each (predictor_type, n_trials)
+    is fit once here and can serve any target_flop cheaply afterward.
 
     Runs sequentially — parallelism is achieved by launching multiple jobs via
     pred_cache_gen.py with different --optimizer / --benchmark arguments.
-    Safe to re-run: already-valid cache entries are skipped instantly (HIT).
+    Safe to re-run: already-cached fits are loaded, not recomputed, unless
+    `override=True`, which forces every fit to be recomputed and the cache
+    file overwritten with the new result.
+
+    For GP_POSTERIOR predictors the trained model is shared across loss,
+    nparam, and hp kinds (same cache_dir, same n), so each (optimizer, seed)
+    trains the GP only once per trial prefix regardless of how many kinds are
+    requested.
     """
     from src.loss_predictor import LossPredictorTypes
     from src.scale_param_predictor import ScaleParamPredictorTypes
+    from src.hp_predictor import HPPredictorTypes
 
     if loss_predictor_types is None:
         loss_predictor_types = list(LossPredictorTypes)
     if nparam_predictor_types is None:
         nparam_predictor_types = list(ScaleParamPredictorTypes)
+    if hp_predictor_types is None:
+        hp_predictor_types = list(HPPredictorTypes)
 
     base_path = Path(base_path)
     tasks: list[tuple] = []
     for benchmark_name in benchmarks:
-        target_flop = target_flop_per_benchmark[benchmark_name]
         best_loss_guess = _get_best_loss_guess(benchmark_name)
         for opt_name, seeds in optimizers.items():
             for seed in seeds:
                 for p_type in loss_predictor_types:
                     tasks.append((
                         str(base_path), benchmark_name, opt_name, seed,
-                        p_type, target_flop, "loss",
-                        key_to_extract, loss_key, best_loss_guess,
+                        p_type, "loss",
+                        key_to_extract, loss_key, best_loss_guess, override,
                     ))
                 for p_type in nparam_predictor_types:
                     tasks.append((
                         str(base_path), benchmark_name, opt_name, seed,
-                        p_type, target_flop, "nparam",
-                        key_to_extract, loss_key, best_loss_guess,
+                        p_type, "nparam",
+                        key_to_extract, loss_key, best_loss_guess, override,
+                    ))
+                for p_type in hp_predictor_types:
+                    tasks.append((
+                        str(base_path), benchmark_name, opt_name, seed,
+                        p_type, "hp",
+                        key_to_extract, loss_key, best_loss_guess, override,
                     ))
 
     total = len(tasks)
     print(f"Warming prediction cache: {total} tasks...")
     for done, task in enumerate(tasks, 1):
-        try:
-            msg = _warm_single_cache(task)
-        except Exception as exc:
-            msg = f"ERROR [{task[6]}/{getattr(task[4], 'value', task[4])}] {task[1]}/{task[2]}/seed_{task[3]}: {exc}"
+        msg = _warm_single_cache(task)
         print(f"  [{done}/{total}] {msg}")
     print("Cache warming complete.")
 
@@ -1887,138 +1783,63 @@ if __name__ == "__main__":
     from src.loss_predictor import LossPredictorTypes
     from src.scale_param_predictor import ScaleParamPredictorTypes
     from src.benchmarks.configs import get_benchmark
-    from src.plotting.consts import target_flop_per_benchmark, \
+    from src.plotting.consts import target_flop_list_per_benchmark, target_flop_multipliers, \
     bench_confs, true_pareto_info_per_benchmark, acc_pred_flop_ranges_per_benchmark_by_ratio,\
-        hp_target_flop_ratios, target_flop_per_benchmark, flop_range_to_show_in_pareto_per_benchmark, \
+        hp_target_flop_ratios, flop_range_to_show_in_pareto_per_benchmark, \
             selected_best_seed_per_benchmark, acc_pred_flop_ranges_per_benchmark, acc_flop_ranges_per_benchmark, \
             all_seeds, results_dir, optimizers_dict, loss_key, search_space_per_benchmark, cost_estimator_per_benchmark, params_estimator_per_benchmark
     
     benchmarks = [
-        # BenchmarkEnum.OPENCLIP.value, 
+        BenchmarkEnum.OPENCLIP.value,
         BenchmarkEnum.LLM.value,
         # BenchmarkEnum.TABPFN.value,
     ]
-    predicted_loss_merged = defaultdict(dict)
-    avg_predicted_loss_merged = defaultdict(dict)
-    predicted_params_merged = defaultdict(dict)
-    avg_predicted_params_merged = defaultdict(dict)
-    loss_predictor_comparison_merged = defaultdict(dict)
-    n_param_predictor_comparison_merged = defaultdict(dict)
+    targets = {
+        BenchmarkEnum.LLM.value: LLM_TARGETS,
+        BenchmarkEnum.OPENCLIP.value: OPENCLIP_TARGETS,
+        # BenchmarkEnum.TABPFN.value: TABPFN_TARGETS,
+    }
 
+    from src.plotting.utils import merge_pareto_plots, merge_split_composite_plots
 
-    for benchmark_name in benchmarks:
-        print(f"\n{'='*60}")
-        print(f"Generating plots for: {benchmark_name}")
-        print(f"{'='*60}")
-        # true_pareto_info = load_or_generate_pareto_info(benchmark_name)
-        targets = {
-            BenchmarkEnum.LLM.value: LLM_TARGETS, 
-            BenchmarkEnum.OPENCLIP.value: OPENCLIP_TARGETS,
-            # BenchmarkEnum.TABPFN.value: TABPFN_TARGETS,
-        }
-        plot_output_dir = results_dir / benchmark_name / "plots"
-        plot_output_dir.mkdir(parents=True, exist_ok=True)
-        
-        benchmark_cfg = bench_confs[benchmark_name]
-        
-        
+    # Every benchmark's target_flop_list has the same number of tiers (see
+    # consts.py); each tier index picks out one target_flop per benchmark.
+    num_tiers = len(target_flop_list_per_benchmark[benchmarks[0]])
 
-        target_flop = target_flop_per_benchmark[benchmark_name]
+    for tier_idx in range(num_tiers):
+        predicted_loss_merged = defaultdict(dict)
+        avg_predicted_loss_merged = defaultdict(dict)
+        predicted_params_merged = defaultdict(dict)
+        avg_predicted_params_merged = defaultdict(dict)
+        loss_predictor_comparison_merged = defaultdict(dict)
+        n_param_predictor_comparison_merged = defaultdict(dict)
 
-        for predictor_type in [
-            # LossPredictorTypes.KAPLAN, 
-            # LossPredictorTypes.CHINCHILLA3,
-            LossPredictorTypes.GP_POSTERIOR,
-            ]:
-            predictor_slug = predictor_type.value.lower().replace(" ", "_")
-            print(f"  Plotting {predictor_type.value} predicted loss at FLOP: {target_flop_per_benchmark[benchmark_name]:.2e} over cumulative FLOPs...")
-            selcted_seed = selected_best_seed_per_benchmark[benchmark_name]
-            # for across_seeds in [True, False]:
-            for across_seeds in [True]:
-                if across_seeds:
-                    (fig_pred_all, _)= plot_predicted_loss_over_flops(
-                        base_path=results_dir / benchmark_name,
-                        optimizers=optimizers_dict,
-                        target_flop=target_flop_per_benchmark[benchmark_name],
-                        predictor_type=predictor_type,
-                        key_to_extract="cost",
-                        loss_key=loss_key,
-                        title=f"{BENCHMARK_TITLES[benchmark_name]} ({predictor_type.value})",
-                        flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
-                        true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-                        return_split=False,
-                        normalized_flops=False,
-                        abs_loss_diff=True,
-                        cost_estimator=cost_estimator_per_benchmark[benchmark_name],
-                        search_space=search_space_per_benchmark[benchmark_name],
-                    )
-                    avg_predicted_loss_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_pred_all, _)
-                    fig_pred_all.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_all_{target_flop:.2e}.pdf", dpi=300, bbox_inches="tight")
-                    plt.close(fig_pred_all)
-                    print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_all_{target_flop:.2e}.pdf'}")
-                else:
-                    # if predictor_type == LossPredictorTypes.KAPLAN:
-                    #     continue
-                    for seed in all_seeds:
+        for benchmark_name in benchmarks:
+            target_flop = target_flop_list_per_benchmark[benchmark_name][tier_idx]
+            target_subdir = f"{target_flop_multipliers[tier_idx]}x"
+
+            print(f"\n{'='*60}")
+            print(f"Generating plots for: {benchmark_name} (target FLOP: {target_flop:.2e}, {target_subdir})")
+            print(f"{'='*60}")
+            plot_output_dir = results_dir / benchmark_name / "plots" / target_subdir
+            plot_output_dir.mkdir(parents=True, exist_ok=True)
+
+            benchmark_cfg = bench_confs[benchmark_name]
+
+            for predictor_type in [
+                LossPredictorTypes.KAPLAN,
+                LossPredictorTypes.CHINCHILLA3,
+                # LossPredictorTypes.GP_POSTERIOR,
+                ]:
+                predictor_slug = predictor_type.value.lower().replace(" ", "_")
+                print(f"  Plotting {predictor_type.value} predicted loss at FLOP: {target_flop:.2e} over cumulative FLOPs...")
+                selcted_seed = selected_best_seed_per_benchmark[benchmark_name]
+                # for across_seeds in [True, False]:
+                for across_seeds in [True]:
+                    if across_seeds:
                         (fig_pred_all, _)= plot_predicted_loss_over_flops(
                             base_path=results_dir / benchmark_name,
-                            optimizers={k: [seed] for k in optimizers_dict.keys()},
-                            target_flop=target_flop_per_benchmark[benchmark_name],
-                            predictor_type=predictor_type,
-                            key_to_extract="cost",
-                            loss_key=loss_key,
-                            title=f"{BENCHMARK_TITLES[benchmark_name]} ({predictor_type.value})",
-                            flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
-                            true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-                            return_split=False,
-                            normalized_flops=False,
-                            cost_estimator=cost_estimator_per_benchmark[benchmark_name],
-                        search_space=search_space_per_benchmark[benchmark_name],
-                        )
-                        if seed == selcted_seed:
-                            predicted_loss_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_pred_all, _)
-                        fig_pred_all.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_all_{seed}_{target_flop:.2e}.pdf", dpi=300, bbox_inches="tight")
-                        plt.close(fig_pred_all)
-                        print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_all_{seed}_{target_flop:.2e}.pdf'}")
-        for predictor_type in [
-            # ScaleParamPredictorTypes.CHINCHILLA3, 
-            # ScaleParamPredictorTypes.POWER_LAW_FIT,
-            ScaleParamPredictorTypes.GP_POSTERIOR
-            ]:
-            selcted_seed = selected_best_seed_per_benchmark[benchmark_name]
-            predictor_slug = predictor_type.value.lower().replace(" ", "_")
-            print(f"  Plotting {predictor_type.value} predicted n_param at FLOP: {target_flop_per_benchmark[benchmark_name]:.2e} over cumulative FLOPs...")
-            # for across_seeds in [True, False]:
-            for across_seeds in [True]:
-                if across_seeds:
-                    (fig_nparam_all, _) = plot_predicted_n_param_over_flops(
-                        base_path=results_dir / benchmark_name,
-                        optimizers=optimizers_dict if across_seeds else {k: [seed] for k in optimizers_dict.keys()},
-                        target_flop=target_flop,
-                        predictor_type=predictor_type,
-                        key_to_extract="cost",
-                        loss_key=loss_key,
-                        title=f"{BENCHMARK_TITLES[benchmark_name]} ({predictor_type.value})",
-                        flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
-                        true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-                        return_split=False,
-                        normalized_flops=False,
-                        abs_param_diff=True,
-                        cost_estimator=cost_estimator_per_benchmark[benchmark_name],
-                        search_space=search_space_per_benchmark[benchmark_name],
-                        params_estimator=params_estimator_per_benchmark[benchmark_name]
-                    )
-                    avg_predicted_params_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_nparam_all, _)
-                    output_path = plot_output_dir / f"{predictor_slug}_predicted_n_param_all_{target_flop:.2e}.pdf"
-                    fig_nparam_all.savefig(output_path, dpi=300, bbox_inches="tight")
-                    plt.close(fig_nparam_all)
-                else:
-                    if predictor_type == ScaleParamPredictorTypes.CHINCHILLA3:
-                        continue
-                    for seed in all_seeds:
-                        (fig_nparam_all, _) = plot_predicted_n_param_over_flops(
-                            base_path=results_dir / benchmark_name,
-                            optimizers={k: [seed] for k in optimizers_dict.keys()},
+                            optimizers=optimizers_dict,
                             target_flop=target_flop,
                             predictor_type=predictor_type,
                             key_to_extract="cost",
@@ -2028,122 +1849,201 @@ if __name__ == "__main__":
                             true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
                             return_split=False,
                             normalized_flops=False,
+                            abs_loss_diff=True,
+                            cost_estimator=cost_estimator_per_benchmark[benchmark_name],
+                            search_space=search_space_per_benchmark[benchmark_name],
+                        )
+                        avg_predicted_loss_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_pred_all, _)
+                        fig_pred_all.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_all_{target_flop:.2e}.pdf", dpi=300, bbox_inches="tight")
+                        plt.close(fig_pred_all)
+                        print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_all_{target_flop:.2e}.pdf'}")
+                    else:
+                        # if predictor_type == LossPredictorTypes.KAPLAN:
+                        #     continue
+                        for seed in all_seeds:
+                            (fig_pred_all, _)= plot_predicted_loss_over_flops(
+                                base_path=results_dir / benchmark_name,
+                                optimizers={k: [seed] for k in optimizers_dict.keys()},
+                                target_flop=target_flop,
+                                predictor_type=predictor_type,
+                                key_to_extract="cost",
+                                loss_key=loss_key,
+                                title=f"{BENCHMARK_TITLES[benchmark_name]} ({predictor_type.value})",
+                                flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
+                                true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                                return_split=False,
+                                normalized_flops=False,
+                                cost_estimator=cost_estimator_per_benchmark[benchmark_name],
+                            search_space=search_space_per_benchmark[benchmark_name],
+                            )
+                            if seed == selcted_seed:
+                                predicted_loss_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_pred_all, _)
+                            fig_pred_all.savefig(plot_output_dir / f"{predictor_slug}_predicted_loss_all_{seed}_{target_flop:.2e}.pdf", dpi=300, bbox_inches="tight")
+                            plt.close(fig_pred_all)
+                            print(f"    ✓ Saved: {plot_output_dir / f'{predictor_slug}_predicted_loss_all_{seed}_{target_flop:.2e}.pdf'}")
+            for predictor_type in [
+                ScaleParamPredictorTypes.CHINCHILLA3,
+                ScaleParamPredictorTypes.POWER_LAW_FIT,
+                # ScaleParamPredictorTypes.GP_POSTERIOR
+                ]:
+                selcted_seed = selected_best_seed_per_benchmark[benchmark_name]
+                predictor_slug = predictor_type.value.lower().replace(" ", "_")
+                print(f"  Plotting {predictor_type.value} predicted n_param at FLOP: {target_flop:.2e} over cumulative FLOPs...")
+                # for across_seeds in [True, False]:
+                for across_seeds in [True]:
+                    if across_seeds:
+                        (fig_nparam_all, _) = plot_predicted_n_param_over_flops(
+                            base_path=results_dir / benchmark_name,
+                            optimizers=optimizers_dict if across_seeds else {k: [seed] for k in optimizers_dict.keys()},
+                            target_flop=target_flop,
+                            predictor_type=predictor_type,
+                            key_to_extract="cost",
+                            loss_key=loss_key,
+                            title=f"{BENCHMARK_TITLES[benchmark_name]} ({predictor_type.value})",
+                            flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
+                            true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                            return_split=False,
+                            normalized_flops=False,
+                            abs_param_diff=True,
                             cost_estimator=cost_estimator_per_benchmark[benchmark_name],
                             search_space=search_space_per_benchmark[benchmark_name],
                             params_estimator=params_estimator_per_benchmark[benchmark_name]
                         )
-                        if seed == selcted_seed:
-                            predicted_params_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_nparam_all, _)
-                        output_path = plot_output_dir / f"{predictor_slug}_predicted_n_param_all_{seed}_{target_flop:.2e}.pdf"
+                        avg_predicted_params_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_nparam_all, _)
+                        output_path = plot_output_dir / f"{predictor_slug}_predicted_n_param_all_{target_flop:.2e}.pdf"
                         fig_nparam_all.savefig(output_path, dpi=300, bbox_inches="tight")
                         plt.close(fig_nparam_all)
+                    else:
+                        if predictor_type == ScaleParamPredictorTypes.CHINCHILLA3:
+                            continue
+                        for seed in all_seeds:
+                            (fig_nparam_all, _) = plot_predicted_n_param_over_flops(
+                                base_path=results_dir / benchmark_name,
+                                optimizers={k: [seed] for k in optimizers_dict.keys()},
+                                target_flop=target_flop,
+                                predictor_type=predictor_type,
+                                key_to_extract="cost",
+                                loss_key=loss_key,
+                                title=f"{BENCHMARK_TITLES[benchmark_name]} ({predictor_type.value})",
+                                flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
+                                true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                                return_split=False,
+                                normalized_flops=False,
+                                cost_estimator=cost_estimator_per_benchmark[benchmark_name],
+                                search_space=search_space_per_benchmark[benchmark_name],
+                                params_estimator=params_estimator_per_benchmark[benchmark_name]
+                            )
+                            if seed == selcted_seed:
+                                predicted_params_merged[predictor_type.value][BENCHMARK_TITLES[benchmark_name]] = (fig_nparam_all, _)
+                            output_path = plot_output_dir / f"{predictor_slug}_predicted_n_param_all_{seed}_{target_flop:.2e}.pdf"
+                            fig_nparam_all.savefig(output_path, dpi=300, bbox_inches="tight")
+                            plt.close(fig_nparam_all)
 
-        continue
-        model_size_predictors_to_compare = list(ScaleParamPredictorTypes)
-        target_flop = target_flop_per_benchmark[benchmark_name]
+            # continue
+            model_size_predictors_to_compare = [p for p in ScaleParamPredictorTypes if p != ScaleParamPredictorTypes.GP_POSTERIOR]
 
-        loss_predictors_to_compare = list(LossPredictorTypes)
+            loss_predictors_to_compare = [p for p in LossPredictorTypes if p != LossPredictorTypes.GP_POSTERIOR]
 
-        for optimizer in ["chinchilla_approach1", "carbs", "bo_space_expansion_modified_jes", "bo_left_budget_modified_jes"]:
-            fig_loss_comp, ax_loss_comp = plot_loss_predictor_comparison_for_optimizer(
-                base_path=results_dir / benchmark_name,
-                optimizer_name=optimizer,
-                seed=all_seeds,
-                target_flop=target_flop,
-                predictor_types=loss_predictors_to_compare,
-                key_to_extract="cost",
-                loss_key=loss_key,
-                flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
-                true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-                # title=f"Loss Predictor Comparison (Chinchilla A1) - {BENCHMARK_TITLES[benchmark_name]}",
-            )
-            loss_predictor_comparison_merged[optimizer][BENCHMARK_TITLES[benchmark_name]] = (fig_loss_comp, ax_loss_comp)
+            for optimizer in ["chinchilla_approach1", "carbs", "bo_left_budget_modified_jes"]:
+                fig_loss_comp, ax_loss_comp = plot_loss_predictor_comparison_for_optimizer(
+                    base_path=results_dir / benchmark_name,
+                    optimizer_name=optimizer,
+                    seed=all_seeds,
+                    target_flop=target_flop,
+                    predictor_types=loss_predictors_to_compare,
+                    key_to_extract="cost",
+                    loss_key=loss_key,
+                    flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
+                    true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                    # title=f"Loss Predictor Comparison (Chinchilla A1) - {BENCHMARK_TITLES[benchmark_name]}",
+                )
+                loss_predictor_comparison_merged[optimizer][BENCHMARK_TITLES[benchmark_name]] = (fig_loss_comp, ax_loss_comp)
 
-            loss_comp_filename = f"loss_predictor_comparison_{optimizer}_{target_flop:.2e}.pdf"
-            fig_loss_comp.savefig(plot_output_dir / loss_comp_filename, dpi=300, bbox_inches="tight")
-            plt.close(fig_loss_comp)
-            print(f"    ✓ Saved: {plot_output_dir / loss_comp_filename}")
+                loss_comp_filename = f"loss_predictor_comparison_{optimizer}_{target_flop:.2e}.pdf"
+                fig_loss_comp.savefig(plot_output_dir / loss_comp_filename, dpi=300, bbox_inches="tight")
+                plt.close(fig_loss_comp)
+                print(f"    ✓ Saved: {plot_output_dir / loss_comp_filename}")
 
-        print(f"  Plotting n_param predictor comparison for Chinchilla A1...")
-        for optimizer in ["chinchilla_approach1", "carbs", "bo_space_expansion_modified_jes", "bo_left_budget_modified_jes"]:
-            fig_comp, ax_comp = plot_n_param_predictor_comparison_for_optimizer(
-                base_path=results_dir / benchmark_name,
-                optimizer_name=optimizer,
-                seed=all_seeds,
-                target_flop=target_flop,
-                predictor_types=model_size_predictors_to_compare,
-                key_to_extract="cost",
-                loss_key=loss_key,
-                flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
-                true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
-                # title=f"Predictor Comparison (Chinchilla A1) - {BENCHMARK_TITLES[benchmark_name]}"
-            )
-            n_param_predictor_comparison_merged[optimizer][BENCHMARK_TITLES[benchmark_name]] = (fig_comp, ax_comp)
+            print(f"  Plotting n_param predictor comparison for Chinchilla A1...")
+            for optimizer in ["chinchilla_approach1", "carbs", "bo_left_budget_modified_jes"]:
+                fig_comp, ax_comp = plot_n_param_predictor_comparison_for_optimizer(
+                    base_path=results_dir / benchmark_name,
+                    optimizer_name=optimizer,
+                    seed=all_seeds,
+                    target_flop=target_flop,
+                    predictor_types=model_size_predictors_to_compare,
+                    key_to_extract="cost",
+                    loss_key=loss_key,
+                    flop_range=acc_pred_flop_ranges_per_benchmark[benchmark_name],
+                    true_pareto_info=true_pareto_info_per_benchmark[benchmark_name],
+                    search_space=search_space_per_benchmark[benchmark_name],
+                    cost_estimator=cost_estimator_per_benchmark[benchmark_name],
+                    params_estimator=params_estimator_per_benchmark[benchmark_name],
+                    # title=f"Predictor Comparison (Chinchilla A1) - {BENCHMARK_TITLES[benchmark_name]}"
+                )
+                n_param_predictor_comparison_merged[optimizer][BENCHMARK_TITLES[benchmark_name]] = (fig_comp, ax_comp)
 
-            comp_filename = f"n_param_predictor_comparison_{optimizer}_{target_flop:.2e}.pdf"
-            fig_comp.savefig(plot_output_dir / comp_filename, dpi=300, bbox_inches="tight")
-            plt.close(fig_comp)
-            print(f"    ✓ Saved: {plot_output_dir / comp_filename}")
+                comp_filename = f"n_param_predictor_comparison_{optimizer}_{target_flop:.2e}.pdf"
+                fig_comp.savefig(plot_output_dir / comp_filename, dpi=300, bbox_inches="tight")
+                plt.close(fig_comp)
+                print(f"    ✓ Saved: {plot_output_dir / comp_filename}")
 
-        report_budget = acc_pred_flop_ranges_per_benchmark[benchmark_name][1] 
+            report_budget = acc_pred_flop_ranges_per_benchmark[benchmark_name][1]
 
-        print(f"  Generating summary table for all predictors/optimizers at budget {report_budget:.2e}...")
+            print(f"  Generating summary table for all predictors/optimizers at budget {report_budget:.2e}...")
 
-      
-    plots_dir = results_dir / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
+        # Composite plots aggregate across benchmarks for this tier; each
+        # benchmark contributes its own target_flop (== max_flops * multiplier),
+        # so the composite dir is keyed by the multiplier rather than a flop value.
+        plots_dir = results_dir / "plots" / f"{target_flop_multipliers[tier_idx]}x"
+        plots_dir.mkdir(parents=True, exist_ok=True)
 
+        if loss_predictor_comparison_merged:
+            for optimizer in loss_predictor_comparison_merged:
+                opt_comparision = loss_predictor_comparison_merged[optimizer]
+                loss_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
+                loss_predictor_comp_master_fig.savefig(plots_dir / f"loss_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
+                plt.close(loss_predictor_comp_master_fig)
+                print(f"✓ Saved: {plots_dir / f'loss_predictor_comparison_{optimizer}_composite_all.pdf'}")
+        if n_param_predictor_comparison_merged:
+            for optimizer in n_param_predictor_comparison_merged:
+                opt_comparision = n_param_predictor_comparison_merged[optimizer]
+                n_param_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
+                n_param_predictor_comp_master_fig.savefig(plots_dir / f"n_param_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
+                plt.close(n_param_predictor_comp_master_fig)
+                print(f"✓ Saved: {plots_dir / f'n_param_predictor_comparison_{optimizer}_composite_all.pdf'}")
 
-    from src.plotting.utils import merge_pareto_plots, merge_split_composite_plots
+        if avg_predicted_loss_merged:
+            for pred_type in avg_predicted_loss_merged:
+                res = avg_predicted_loss_merged[pred_type]
+                avg_pred_loss_master_fig, _ = merge_pareto_plots(res)
+                avg_pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_avg_predicted_loss_composite_all.pdf", dpi=300, bbox_inches="tight")
+                plt.close(avg_pred_loss_master_fig)
+                print(f"✓ Saved: {plots_dir / f'{pred_type}_avg_predicted_loss_composite_all.pdf'}")
 
-    
-    if loss_predictor_comparison_merged:
-        for optimizer in loss_predictor_comparison_merged:
-            opt_comparision = loss_predictor_comparison_merged[optimizer]
-            loss_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
-            loss_predictor_comp_master_fig.savefig(plots_dir / f"loss_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
-            plt.close(loss_predictor_comp_master_fig)
-            print(f"✓ Saved: {plots_dir / f'loss_predictor_comparison_{optimizer}_composite_all.pdf'}")
-    if n_param_predictor_comparison_merged:
-        for optimizer in n_param_predictor_comparison_merged:
-            opt_comparision = n_param_predictor_comparison_merged[optimizer]
-            n_param_predictor_comp_master_fig, _ = merge_pareto_plots(opt_comparision)
-            n_param_predictor_comp_master_fig.savefig(plots_dir / f"n_param_predictor_comparison_{optimizer}_composite_all.pdf", dpi=300, bbox_inches="tight")
-            plt.close(n_param_predictor_comp_master_fig)
-            print(f"✓ Saved: {plots_dir / f'n_param_predictor_comparison_{optimizer}_composite_all.pdf'}")
+        if predicted_loss_merged:
+            for pred_type in predicted_loss_merged:
+                res = predicted_loss_merged[pred_type]
+                pred_loss_master_fig, _ = merge_pareto_plots(res)
+                pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_predicted_loss_composite_all.pdf", dpi=300, bbox_inches="tight")
+                plt.close(pred_loss_master_fig)
+                print(f"✓ Saved: {plots_dir / f'{pred_type}_predicted_loss_composite_all.pdf'}")
 
-    
-    if avg_predicted_loss_merged:
-        for pred_type in avg_predicted_loss_merged:
-            res = avg_predicted_loss_merged[pred_type]
-            avg_pred_loss_master_fig, _ = merge_pareto_plots(res)
-            avg_pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_avg_predicted_loss_composite_all.pdf", dpi=300, bbox_inches="tight")
-            plt.close(avg_pred_loss_master_fig)
-            print(f"✓ Saved: {plots_dir / f'{pred_type}_avg_predicted_loss_composite_all.pdf'}")
+        if avg_predicted_params_merged:
+            for pred_type in avg_predicted_params_merged:
+                res = avg_predicted_params_merged[pred_type]
+                avg_pred_loss_master_fig, _ = merge_pareto_plots(res)
+                avg_pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_avg_predicted_params_composite_all.pdf", dpi=300, bbox_inches="tight")
+                plt.close(avg_pred_loss_master_fig)
+                print(f"✓ Saved: {plots_dir / f'{pred_type}_avg_predicted_params_composite_all.pdf'}")
 
-    if predicted_loss_merged:
-        for pred_type in predicted_loss_merged:
-            res = predicted_loss_merged[pred_type]
-            pred_loss_master_fig, _ = merge_pareto_plots(res)
-            pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_predicted_loss_composite_all.pdf", dpi=300, bbox_inches="tight")
-            plt.close(pred_loss_master_fig)
-            print(f"✓ Saved: {plots_dir / f'{pred_type}_predicted_loss_composite_all.pdf'}")
-
-    if avg_predicted_params_merged:
-        for pred_type in avg_predicted_params_merged:
-            res = avg_predicted_params_merged[pred_type]
-        avg_pred_loss_master_fig, _ = merge_pareto_plots(res)
-        avg_pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_avg_predicted_params_composite_all.pdf", dpi=300, bbox_inches="tight")
-        plt.close(avg_pred_loss_master_fig)
-        print(f"✓ Saved: {plots_dir / f'{pred_type}_avg_predicted_params_composite_all.pdf'}")
-
-    if predicted_params_merged:
-        for pred_type in predicted_params_merged:
-            res = predicted_params_merged[pred_type]
-            pred_loss_master_fig, _ = merge_pareto_plots(res)
-            pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_predicted_params_composite_all.pdf", dpi=300, bbox_inches="tight")
-            plt.close(pred_loss_master_fig)
-        print(f"✓ Saved: {plots_dir / f'{pred_type}_predicted_params_composite_all.pdf'}")
+        if predicted_params_merged:
+            for pred_type in predicted_params_merged:
+                res = predicted_params_merged[pred_type]
+                pred_loss_master_fig, _ = merge_pareto_plots(res)
+                pred_loss_master_fig.savefig(plots_dir / f"{pred_type}_predicted_params_composite_all.pdf", dpi=300, bbox_inches="tight")
+                plt.close(pred_loss_master_fig)
+            print(f"✓ Saved: {plots_dir / f'{pred_type}_predicted_params_composite_all.pdf'}")
 
     raise Exception("")
 
@@ -2168,7 +2068,7 @@ if __name__ == "__main__":
             target_flop_per_benchmark=target_flop_per_benchmark,
             flop_ranges_per_benchmark=acc_pred_flop_ranges_per_benchmark,
             true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
-            return_split=False,
+            abs_loss_diff=True,
         )
     pred_loss_comp_all.savefig(plots_dir / "pred_loss_comp_all.pdf", dpi=300, bbox_inches="tight")
     plt.close(pred_loss_comp_all)
@@ -2191,7 +2091,7 @@ if __name__ == "__main__":
             params_estimator_per_benchmark=params_estimator_per_benchmark,
             flop_ranges_per_benchmark=acc_pred_flop_ranges_per_benchmark,
             true_pareto_info_per_benchmark=true_pareto_info_per_benchmark,
-            return_split=False,
+            abs_param_diff=True,
         )
     pred_n_param_comp_all.savefig(plots_dir / "pred_n_param_comp_all.pdf", dpi=300, bbox_inches="tight")
     plt.close(pred_n_param_comp_all)

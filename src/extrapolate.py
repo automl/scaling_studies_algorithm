@@ -103,9 +103,10 @@ def load_pareto_info(output_dir: Path | str) -> dict[str, list] | None:
 
 def load_or_generate_pareto_info(benchmark_name: str) -> dict[str, list]:
     from src.baselines.configs import OptimizerEnum
+    from src.benchmarks.configs import get_results_dir
     comprehensive_study_root_dir = (
-        f"/work/dlclarge1/alipourn-scan_suite/{benchmark_name}/"
-        f"{OptimizerEnum.GRID_SEARCH}/seed_40"
+        # get_results_dir() / benchmark_name / f"{OptimizerEnum.GRID_SEARCH}" / "seed_40"
+        Path("/work/dlc2workfs2/alipourn-scan/test") / benchmark_name / f"{OptimizerEnum.GRID_SEARCH}" / "seed_40"
     )
     summary_dir = Path(comprehensive_study_root_dir) / "summary"
 

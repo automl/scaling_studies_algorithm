@@ -1,114 +1,152 @@
-"""Plot FLOPs per sample vs Model parameters for gflops_mparams.json analysis."""
+"""Plot FLOPs per cell vs model parameters for the tabpfn benchmark."""
 
 import json
+from collections import defaultdict
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
-from pathlib import Path
-import inspect
-import surrogate_benchmark
+
+TABPFN_DIR = Path(
+    "/home/alipourn/scaling_studies_algorithm/dep/scan_bench_suite/scan_benchmark/tabpfn"
+)
 
 
-def plot_gflops_vs_mparams():
-    """Read gflops_mparams.json and plot gflops_per_sample vs mparams with Chinchilla line."""
-    
-    # Get the JSON file path
-    package_dir = Path(inspect.getfile(surrogate_benchmark)).parent
-    json_file = package_dir / "gflops_mparams.json"
-    
-    if not json_file.exists():
-        print(f"Error: {json_file} not found")
-        return
-    
-    # Read the JSON file
-    with open(json_file, 'r') as f:
-        gflops_mparams = json.load(f)
-    
-    print(f"Loaded {len(gflops_mparams)} configurations from {json_file}")
-    
-    # Extract data points
-    mparams_list = []
-    gflops_per_sample_list = []
+def load_tabpfn_points(tabpfn_dir: Path):
+    """Join n_params.json and flops.json on (embedding_size, num_layers)."""
+    with open(tabpfn_dir / "n_params.json") as f:
+        n_params_entries = json.load(f)
+    with open(tabpfn_dir / "flops.json") as f:
+        flops_entries = json.load(f)
+
+    # A few configs are measured more than once; average their FLOPs.
+    flops_by_config = defaultdict(list)
+    for entry in flops_entries:
+        cfg = entry["config"]
+        flops_by_config[(cfg["embedding_size"], cfg["num_layers"])].append(
+            float(entry["flops_per_cell"])
+        )
+
+    n_params_list = []
+    flops_per_cell_list = []
     config_names = []
-    
-    for key, value in gflops_mparams.items():
-        if isinstance(value, dict) and "gflops_per_sample" in value and "mparams" in value:
-            mparams = float(value["mparams"])
-            gflops_per_sample = float(value["gflops_per_sample"])
-            
-            mparams_list.append(mparams)
-            gflops_per_sample_list.append(gflops_per_sample)
-            config_names.append(key)
-            
-            print(f"{key}: mparams={mparams:.4e}, gflops_per_sample={gflops_per_sample:.4e}")
-    
-    if not mparams_list:
-        print("Error: No valid data points found in JSON")
+
+    for entry in n_params_entries:
+        cfg = entry["model_config"]
+        key = (cfg["embedding_size"], cfg["num_layers"])
+        if key not in flops_by_config:
+            print(f"Warning: no FLOPs entry for embedding_size={key[0]} num_layers={key[1]}")
+            continue
+
+        n_params_list.append(float(entry["n_parameters"]))
+        flops_per_cell_list.append(float(np.mean(flops_by_config[key])))
+        config_names.append(f"emb{key[0]}_L{key[1]}")
+
+    return (
+        np.array(n_params_list),
+        np.array(flops_per_cell_list),
+        config_names,
+    )
+
+
+def plot_flops_vs_params():
+    n_params, flops_per_cell, config_names = load_tabpfn_points(TABPFN_DIR)
+
+    if n_params.size == 0:
+        print("Error: no matching (n_params, flops) pairs found")
         return
-    
-    # Fit linear line to data in log-log space
-    log_mparams = np.log(mparams_list)
-    log_gflops = np.log(gflops_per_sample_list)
-    coeffs = np.polyfit(log_mparams, log_gflops, 1)
-    slope = coeffs[0]
-    intercept = coeffs[1]
-    
-    # Create fitted line
-    mparams_range_fit = np.array([min(mparams_list), max(mparams_list)])
-    fitted_line = np.exp(intercept) * (mparams_range_fit ** slope)
-    
-    # Create plot
+
+    print(f"Matched {len(n_params)} configurations")
+
+    # Fit a power law in log-log space
+    log_params = np.log(n_params)
+    log_flops = np.log(flops_per_cell)
+    slope, intercept = np.polyfit(log_params, log_flops, 1)
+
+    predicted = intercept + slope * log_params
+    ss_res = np.sum((log_flops - predicted) ** 2)
+    ss_tot = np.sum((log_flops - np.mean(log_flops)) ** 2)
+    r_squared = 1.0 - ss_res / ss_tot
+
+    params_range = np.array([n_params.min(), n_params.max()])
+    fitted_line = np.exp(intercept) * (params_range**slope)
+    chinchilla_line = 6 * params_range
+
     fig, ax = plt.subplots(figsize=(10, 7))
-    
-    # Plot actual data points
-    ax.scatter(mparams_list, gflops_per_sample_list, s=100, alpha=0.7, label='Actual GFLOPs/sample', color='blue', edgecolors='black', linewidth=1.5)
-    
-    # Plot fitted line
-    ax.plot(mparams_range_fit, fitted_line, 'g-', linewidth=2.5, label=f'Fitted line (slope={slope:.3f})', alpha=0.8)
-    
-    # Plot Chinchilla line (6 * mparams, which has slope=1 in log-log)
-    mparams_range = np.array([min(mparams_list), max(mparams_list)])
-    chinchilla_line = 6 * mparams_range
-    ax.plot(mparams_range, chinchilla_line, 'r--', linewidth=2.5, label='Chinchilla rule (6 × mparams, slope=1)', alpha=0.8)
-    
-    # Configure axes (log-log scale for better visualization)
-    ax.set_xscale('log')
-    ax.set_yscale('log')
-    ax.set_xlabel('Model Parameters (mparams)', fontsize=12, fontweight='bold')
-    ax.set_ylabel('GFLOPs per Sample', fontsize=12, fontweight='bold')
-    ax.set_title('GFLOPs per Sample vs Model Parameters\n(with Chinchilla Rule)', fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3, linestyle='--')
-    ax.legend(fontsize=11, loc='best')
-    
-    # Add annotations for each point
-    for i, (mparams, gflops, name) in enumerate(zip(mparams_list, gflops_per_sample_list, config_names)):
-        # Only annotate if space allows
-        if len(mparams_list) <= 10:
-            ax.annotate(name, (mparams, gflops), fontsize=8, alpha=0.7, 
-                       xytext=(5, 5), textcoords='offset points')
-    
+
+    embedding_sizes = np.array([int(name.split("_")[0][3:]) for name in config_names])
+    scatter = ax.scatter(
+        n_params,
+        flops_per_cell,
+        c=np.log2(embedding_sizes),
+        cmap="viridis",
+        s=60,
+        alpha=0.8,
+        edgecolors="black",
+        linewidth=0.5,
+        label="Measured FLOPs/cell",
+    )
+    cbar = fig.colorbar(scatter, ax=ax)
+    cbar.set_label("log2(embedding_size)", fontsize=11)
+
+    ax.plot(
+        params_range,
+        fitted_line,
+        "g-",
+        linewidth=2.5,
+        label=f"Fitted line (slope={slope:.3f})",
+        alpha=0.8,
+    )
+    ax.plot(
+        params_range,
+        chinchilla_line,
+        "r--",
+        linewidth=2.5,
+        label="Chinchilla rule (6 x N, slope=1)",
+        alpha=0.8,
+    )
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("Model Parameters (N)", fontsize=12, fontweight="bold")
+    ax.set_ylabel("FLOPs per Cell", fontsize=12, fontweight="bold")
+    ax.set_title(
+        "TabPFN: FLOPs per Cell vs Model Parameters\n(with Chinchilla Rule)",
+        fontsize=14,
+        fontweight="bold",
+    )
+    ax.grid(True, alpha=0.3, linestyle="--")
+    ax.legend(fontsize=11, loc="best")
+
     plt.tight_layout()
-    
-    # Save figure
-    output_path = Path(__file__).parent / "gflops_vs_mparams.png"
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    output_path = Path(__file__).parent / "tabpfn_flops_vs_params.png"
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     print(f"\nPlot saved to {output_path}")
-    
-    # Print fitted line information
-    print(f"\nFitted Power Law: GFLOPs/sample = {np.exp(intercept):.6f} × mparams^{slope:.4f}")
+
+    print(f"\nFitted Power Law: FLOPs/cell = {np.exp(intercept):.6f} x N^{slope:.4f}")
     print(f"  Slope: {slope:.4f}")
     print(f"  Intercept (log-space): {intercept:.4f}")
     print(f"  Coefficient (linear-space): {np.exp(intercept):.6f}")
-    
-    # Calculate statistics
-    ratios = np.array(gflops_per_sample_list) / (6 * np.array(mparams_list))
-    print(f"\nStatistics - Ratio of Actual to Chinchilla (6 × mparams):")
+    print(f"  R^2 (log-log): {r_squared:.4f}")
+
+    ratios = flops_per_cell / (6 * n_params)
+    print("\nStatistics - Ratio of Actual to Chinchilla (6 x N):")
     print(f"  Mean: {np.mean(ratios):.4f}")
     print(f"  Std Dev: {np.std(ratios):.4f}")
-    print(f"  Min: {np.min(ratios):.4f} (config: {config_names[np.argmin(ratios)]})")
-    print(f"  Max: {np.max(ratios):.4f} (config: {config_names[np.argmax(ratios)]})")
-    
-    plt.show()
+    print(f"  Min: {np.min(ratios):.4f} (config: {config_names[int(np.argmin(ratios))]})")
+    print(f"  Max: {np.max(ratios):.4f} (config: {config_names[int(np.argmax(ratios))]})")
+
+    # The FLOPs grid is only keyed by (embedding_size, num_layers), so fit the
+    # slope within each embedding size to see how much of the deviation from 1
+    # comes from mixing widths and depths.
+    print("\nPer-embedding-size slope (varying depth only):")
+    for emb in sorted(set(embedding_sizes.tolist())):
+        mask = embedding_sizes == emb
+        if mask.sum() < 2:
+            continue
+        emb_slope, _ = np.polyfit(np.log(n_params[mask]), np.log(flops_per_cell[mask]), 1)
+        print(f"  embedding_size={emb:>3}: slope={emb_slope:.4f}  ({int(mask.sum())} points)")
 
 
 if __name__ == "__main__":
-    plot_gflops_vs_mparams()
+    plot_flops_vs_params()

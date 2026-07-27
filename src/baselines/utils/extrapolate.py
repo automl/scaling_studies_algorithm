@@ -5,7 +5,7 @@ from plotting.prediction_plots import get_optimizer_color, get_optimizer_linesty
 from src.plotting.standalone_plots import process_optimizer
 from src.extrapolate import extrapolate_single
 from src.baselines.configs import OptimizerEnum
-from src.benchmarks.configs import get_benchmark
+from src.benchmarks.configs import get_benchmark, get_predictor_type, get_results_dir
 
 def plot_optimizer_extrapolation(
     *,
@@ -208,7 +208,7 @@ def plot_optimizer_extrapolation(
 if __name__ == "__main__":
     from pathlib import Path
     
-    results_dir = Path("/work/dlclarge1/alipourn-scan_suite")
+    results_dir = get_results_dir()
     loss_key = "objective_to_minimize"
     
     # Seeds to process
@@ -238,7 +238,7 @@ if __name__ == "__main__":
         print(f"{'='*60}")
         
         targets = {BenchmarkEnum.LLM.value: LLM_TARGETS, BenchmarkEnum.OPENCLIP.value: OPENCLIP_TARGETS}
-        flop_range = (5e16 if benchmark_name == BenchmarkEnum.OPENCLIP.value else 9.99e18, get_benchmark(benchmark_name, False).max_evaluation_flops * 0.9)
+        flop_range = (5e16 if benchmark_name == BenchmarkEnum.OPENCLIP.value else 9.99e18, get_benchmark(benchmark_name, False, predictor_type=get_predictor_type()).max_evaluation_flops * 0.9)
         for target in targets[benchmark_name]:
             try:
                 target_val = target.value if hasattr(target, 'value') else target
@@ -252,8 +252,7 @@ if __name__ == "__main__":
             
             print(f"  Plotting extrapolation for {target_val}...")
             
-            from src.benchmarks.configs import get_benchmark
-            benchmark = get_benchmark(benchmark_name, False)
+            benchmark = get_benchmark(benchmark_name, False, predictor_type=get_predictor_type())
             
             # Load pareto info
             comprehensive_study_root_dir = results_dir / benchmark_name / OptimizerEnum.GRID_SEARCH.value / "seed_40"

@@ -277,6 +277,8 @@ def _copy_axis_artists(source_ax: Any, target_ax: Any) -> None:
             facecolors = collection.get_facecolors()
             edgecolors = collection.get_edgecolors()
             sizes = collection.get_sizes()
+            linewidths = collection.get_linewidths()
+            paths = collection.get_paths()
             target_ax.scatter(
                 offsets[:, 0],
                 offsets[:, 1],
@@ -284,6 +286,8 @@ def _copy_axis_artists(source_ax: Any, target_ax: Any) -> None:
                 c=facecolors if len(facecolors) else None,
                 edgecolors=edgecolors if len(edgecolors) else None,
                 s=sizes if len(sizes) else None,
+                marker=paths[0] if paths else None,
+                linewidths=linewidths if len(linewidths) else None,
                 alpha=collection.get_alpha(),
                 zorder=collection.get_zorder(),
             )
@@ -348,6 +352,8 @@ def merge_split_composite_plots(
     figsize: tuple[float, float] | None = None,
     close_sources: bool = False,
     n_per_row: int = 3,
+    legend_groups: list[int] | None = None,
+    panel_labels: bool = False,
 ) -> tuple[Any, np.ndarray]:
     """
     Combine split composite plots into one figure with a shared legend.
@@ -355,17 +361,28 @@ def merge_split_composite_plots(
     Each input result is expected to be a ``(fig, axes)`` pair, such as the
     all/with-priors/without-priors outputs returned by the composite plotting
     functions. Axes are arranged in horizontal rows with n_per_row axes per row.
+
+    By default the shared legend is built from every group's axes. Pass
+    ``legend_groups`` (indices into ``split_results``) to pull the legend from
+    only a subset of groups, e.g. ``legend_groups=[0]`` for the first group only.
+
+    By default each first-row axis keeps its source benchmark name as its title.
+    Pass ``panel_labels=True`` to replace every axis's title with a sequential
+    "(a)", "(b)", ... panel label instead.
     """
     if not split_results:
         raise ValueError("split_results must contain at least one (fig, axes) pair")
 
     axes_per_group = [_flatten_axes(axes) for _fig, axes in split_results]
-    
-    # Flatten all axes from all groups into a single list
+
+    # Flatten all axes from all groups into a single list, tracking each
+    # axis's source group so the legend can optionally be restricted.
     all_axes_flat = []
-    for source_axes in axes_per_group:
+    axis_group_idx = []
+    for group_idx, source_axes in enumerate(axes_per_group):
         all_axes_flat.extend(source_axes)
-    
+        axis_group_idx.extend([group_idx] * len(source_axes))
+
     total_axes = len(all_axes_flat)
     num_cols = n_per_row
     num_rows = (total_axes + num_cols - 1) // num_cols  # Ceiling division
@@ -394,8 +411,11 @@ def merge_split_composite_plots(
             # Copy format without title, we'll handle titles manually
             _copy_axis_format(source_ax, target_ax, show_title=False)
             
-            # Set title only in the first row, centered
-            if row_idx == 0:
+            if panel_labels:
+                letter = string.ascii_lowercase[axis_idx % len(string.ascii_lowercase)]
+                target_ax.set_title(f"({letter})", loc="left", fontsize=20)
+            elif row_idx == 0:
+                # Set title only in the first row, centered
                 title = _strip_panel_prefix(source_ax.get_title(loc="left"))
                 target_ax.set_title(title, loc="center", fontsize=20)
             
@@ -404,8 +424,9 @@ def merge_split_composite_plots(
                 target_ax.set_xlabel("")
             
             handles, labels = target_ax.get_legend_handles_labels()
-            shared_handles.extend(handles)
-            shared_labels.extend(labels)
+            if legend_groups is None or axis_group_idx[axis_idx] in legend_groups:
+                shared_handles.extend(handles)
+                shared_labels.extend(labels)
 
             if target_ax.get_legend() is not None:
                 target_ax.get_legend().remove()
@@ -423,13 +444,13 @@ def merge_split_composite_plots(
             clean_handles,
             clean_labels,
             loc="lower center",
-            bbox_to_anchor=(0.5, -0.05),
+            bbox_to_anchor=(0.5, -0.15),
             ncol=min(4, len(clean_labels)),
             fontsize=20,
             frameon=True,
         )
 
-    plt.tight_layout(rect=[0, 0.05, 1, 1])
+    plt.tight_layout(rect=[0, 0.1, 1, 1])
     return master_fig, master_axes
 
 
@@ -547,11 +568,17 @@ def merge_pareto_plots(benchmark_dict):
             if isinstance(collection, PathCollection):
                 offsets = collection.get_offsets()
                 if len(offsets) > 0:
+                    paths = collection.get_paths()
+                    linewidths = collection.get_linewidths()
+                    edgecolors = collection.get_edgecolors()
                     new_ax.scatter(offsets[:, 0], offsets[:, 1],
                                    label=collection.get_label(),
                                    color=collection.get_facecolors()[0] if len(collection.get_facecolors()) else None,
+                                   edgecolors=edgecolors if len(edgecolors) else None,
                                    alpha=collection.get_alpha(),
                                    s=collection.get_sizes()[0] if len(collection.get_sizes()) else None,
+                                   marker=paths[0] if paths else None,
+                                   linewidths=linewidths[0] if len(linewidths) else None,
                                    zorder=collection.get_zorder())
             
             # Handle fill_between (Shaded confidence intervals)

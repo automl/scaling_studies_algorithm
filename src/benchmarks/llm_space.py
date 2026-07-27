@@ -10,10 +10,11 @@ import inspect
 import json
 from pathlib import Path
 
+from scan_benchmark.base_performance_benchmark import PerformancePredictorType
 import neps
 
 
-from dep.scan_bench_suite.scan_benchmark.llm.api import LLMBenchmark, LLMConfig, LLMTarget
+from scan_benchmark.llm.api import LLMBenchmark, LLMConfig, LLMTarget
 
 LLM_TARGETS = [
     LLMTarget.VAL_LOSS,
@@ -26,15 +27,22 @@ LLM_TARGETS = [
     # LLMTarget.PIQA_ACC
 ]
 
-def get_benchmark(seed: int = 1) -> LLMBenchmark:
+def get_benchmark(seed: int = 1, predictor_type: PerformancePredictorType = PerformancePredictorType.TABPFN,) -> LLMBenchmark:
+    # target=None would fall back to LLMTarget.default() ("test_loss"), which
+    # is NOT what LLM_TARGETS enables (VAL_LOSS / "valid_loss") -- pass the
+    # list explicitly so LLMBenchmark predicts the intended target.
     return LLMBenchmark(
-        targets=LLM_TARGETS) # type: ignore
+        target=LLM_TARGETS,
+        predictor_type=predictor_type
+    )
+
+MIN_N_HEADS, MAX_N_HEADS = 6, 38  # must match valid_n_heads in scan_benchmark.llm.config.LLMConfig
 
 def find_closest_divisible_n_heads(d_model: int, n_heads: int) -> int:
-    for nh in range(n_heads, 6, -2):
+    for nh in range(n_heads, MIN_N_HEADS - 2, -2):
         if d_model % nh == 0:
             return nh
-    for nh in range(n_heads, 24, +2):
+    for nh in range(n_heads + 2, MAX_N_HEADS + 2, 2):
         if d_model % nh == 0:
             return nh
     raise ValueError(f"Could not find a valid n_heads for d_model {d_model} close to {n_heads}")
@@ -57,10 +65,10 @@ def normalize_llm_config(raw_conf: dict) -> dict:
         "cooldown_steps": (0.0, 0.3),
     }
     int_bounds = {
-        "d_model": (4, 18),
-        "n_layers": (4, 24),
-        "n_heads": (3, 12),
-        "n_tokens": (int(2e8), int(1.6e10)),
+        "d_model": (4, 24),
+        "n_layers": (4, 30),
+        "n_heads": (3, 19),
+        "n_tokens": (int(2e8), int(4e10)),
     }
     
     for name, value in list(conf.items()):
@@ -140,7 +148,7 @@ def evaluate_pipeline_wrapper(bench: LLMBenchmark, lc_aware: bool = False):
                         # raise ValueError("Benchmark query failed with config: {config}")
                     n_data = config.training_progress * n_tokens # num tokens seen so far
                     flops = float(result["model_stats"]["total_training_flops"])
-                    lc.append((n_data, flops, float(result["predictions"]["valid_loss"]["mean"])))
+                    lc.append((n_data, flops, float(result["predictions"]["mean"])))
         config.training_progress = 1.0 # for double caution
         try:
             result = bench.query(config) if not lc_aware else results[-1]
@@ -160,7 +168,7 @@ def evaluate_pipeline_wrapper(bench: LLMBenchmark, lc_aware: bool = False):
         # if result["failed"]:
             # print(f"Benchmark query failed with config: {config}")
         return {
-            "objective_to_minimize": float((result.get("predictions") or {}).get("valid_loss", {}).get('mean', float('nan'))), 
+            "objective_to_minimize": float((result.get("predictions") or {}).get("mean", float('nan'))),
             "cost": float(result["model_stats"]["total_training_flops"]), 
             "learning_curve": lc,
             "info_dict": {
@@ -211,26 +219,26 @@ class PipelineScalingConfig(neps.PipelineSpace):
     # scale parameters
     d_model = neps.Integer( #64
         lower=4,
-        upper=18,
+        upper=24,
         is_scaling=True,
     )
     
     n_layers = neps.Integer(
         lower=4,
-        upper=24,
+        upper=30,
         is_scaling=True,
     )
 
     n_heads = neps.Integer( #2
         lower=3,
-        upper=12,
+        upper=19,
         prior=4,
         prior_confidence='high',
     )
 
     n_tokens = neps.Integer(
         lower=int(2e8),
-        upper=int(1.6e10),
+        upper=int(4e10),
         log=True,
         is_scaling=True,
     )
@@ -239,11 +247,11 @@ logging.basicConfig(level=logging.INFO,)
 
 def get_macro_params_bounds(bench: LLMBenchmark) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     max_flop_conf = dict(
-        lr=1.0e-2, weight_decay=2.0e-1, beta1=0.9, beta2=0.999, cooldown_steps=0.3, d_model=18, n_layers=24, n_heads=12, n_tokens=1.6e10
+        lr=1.0e-2, weight_decay=2.0e-1, beta1=0.9, beta2=0.999, cooldown_steps=0.3, d_model=24, n_layers=30, n_heads=19, n_tokens=4e10
     )
     
     min_flop_conf = dict(
-        lr=1.0e-2, weight_decay=2.0e-1, beta1=0.8, beta2=0.9, cooldown_steps=0, d_model=4, n_layers=4, n_heads=4, n_tokens=2e8
+        lr=1.0e-2, weight_decay=2.0e-1, beta1=0.8, beta2=0.9, cooldown_steps=0, d_model=4, n_layers=4, n_heads=3, n_tokens=2e8
     )
 
     res = evaluate_pipeline_wrapper(bench)(
@@ -265,7 +273,7 @@ def get_macro_params_bounds(bench: LLMBenchmark) -> tuple[tuple[float, float, fl
     print(f"{min_params:e} parameters, {min_data:e} data points, total flops: {min_flops:e}")
     return ((min_params, min_data, min_flops), (max_params, max_data, max_flops))
 
-# 4.401815e+08 parameters, 1.600000e+10 data points, total flops: 5.312364e+19
+# 9.266657e+08 parameters, 4.000000e+10 data points, total flops: 2.676758e+20
 # 1.628109e+07 parameters, 2.000000e+08 data points, total flops: 2.456771e+16
 
 def get_pipeline_space():

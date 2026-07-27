@@ -14,18 +14,4 @@ conda activate scaling
 
 export PYTHONPATH="/home/alipourn/scaling_studies_algorithm:$PYTHONPATH"
 
-SEEDS=(40 41 42 43 44 45 46 47 48 49 50)
-OPTIMIZERS=(bo_space_expansion_jes bo_left_budget_mes bo_left_budget_ei bo_left_budget_jes)
-BENCHMARK=openclip
-
-NUM_OPTIMIZERS=${#OPTIMIZERS[@]}  # 4
-
-seed_idx=$(( SLURM_ARRAY_TASK_ID / NUM_OPTIMIZERS ))
-opt_idx=$(( SLURM_ARRAY_TASK_ID % NUM_OPTIMIZERS ))
-
-seed=${SEEDS[$seed_idx]}
-optimizer=${OPTIMIZERS[$opt_idx]}
-
-echo "Task $SLURM_ARRAY_TASK_ID: optimizer=$optimizer seed=$seed"
-
-python -m src.run --optimizer $optimizer --benchmark $BENCHMARK --seed $seed
+python -m src.run --optimizer grid_search --benchmark openclip --seed 40

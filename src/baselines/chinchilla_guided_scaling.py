@@ -202,11 +202,12 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         # Target multipliers: 5*N, 10*N, 20*N, 80*N (or adjusted based on domain)
         # data_multipliers = [5, 10, 20, 80]
         if self.benchmark_type == BenchmarkEnum.TABPFN:
-            data_multipliers = [5, 30, 60, 80]
+            data_multipliers = [50, 80, 100, 200, 400, 600, 700, 800, 900, 1000]
         elif self.benchmark_type == BenchmarkEnum.LLM:
             data_multipliers = [5, 10, 20, 80]
         elif self.benchmark_type == BenchmarkEnum.OPENCLIP:
-            data_multipliers = [0.15, 0.3, 0.6, 2.4]
+            # data_multipliers = [0.15, 0.3, 0.6, 2.4]
+            data_multipliers = [0.15, 0.5, 4, 16, 40, 60, 99]
 
         config_list = []
         
