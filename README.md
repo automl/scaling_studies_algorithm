@@ -122,3 +122,10 @@ conclusions surrogate-specific?
 **Compute budget.** Each benchmark's total optimizer-visible FLOPs budget (`max_evaluation_flops`) and
 target range (`min_flops`/`max_flops`) are fixed per benchmark in
 [`src/benchmarks/configs.py`](src/benchmarks/configs.py).
+
+## Contributing
+
+Contributions are welcome. Please open an issue or submit a pull request.
+
+For usage and licensing terms, see the LICENSE file.
+
