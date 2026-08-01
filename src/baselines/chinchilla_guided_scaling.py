@@ -207,7 +207,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             data_multipliers = [5, 10, 20, 80]
         elif self.benchmark_type == BenchmarkEnum.OPENCLIP:
             # data_multipliers = [0.15, 0.3, 0.6, 2.4]
-            data_multipliers = [0.15, 0.5, 4, 16, 40, 60, 99]
+            data_multipliers = [0.15, 0.3, 0.5, 4, 16, 20]
 
         config_list = []
         
@@ -623,8 +623,33 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         return sample
     
 
+    #: Default search range for the alpha/beta exponents of `L = E + A/N^a + B/D^b`.
+    #: Appropriate for a next-token/contrastive training loss, which falls fast
+    #: enough in N and D to land inside it. Accuracy-like targets fall far more
+    #: slowly and need a wider range -- see `get_power_law_curvature`.
+    DEFAULT_EXPONENT_BOUNDS = (0.25, 0.75)
+
     @classmethod
-    def get_power_law_curvature(cls, N, D, L, best_loss_guess) -> ScalingLawParameters:
+    def get_power_law_curvature(
+        cls, N, D, L, best_loss_guess, exponent_bounds=None
+    ) -> ScalingLawParameters:
+        """Fit `L = E + A/N^alpha + B/D^beta` by Huber loss in log space.
+
+        `best_loss_guess` upper-bounds the irreducible term E (searched over
+        `(best_loss_guess * 1e-3, best_loss_guess)`), so it must be on the scale
+        of whatever `L` is -- for an accuracy-like target extracted as `1 - acc`
+        that is `1 - <achievable accuracy ceiling>`, not the training loss floor.
+
+        `exponent_bounds` bounds alpha and beta; defaults to
+        `DEFAULT_EXPONENT_BOUNDS`. Passing a range that excludes the true
+        exponents does not merely widen the error bars: both exponents rail at
+        the same bound, and the derived compute-optimal exponent
+        `beta / (alpha + beta)` collapses to exactly 0.5 independent of the data.
+        """
+        lo, hi = cls.DEFAULT_EXPONENT_BOUNDS if exponent_bounds is None else exponent_bounds
+        if not 0 < lo < hi:
+            raise ValueError(f"exponent_bounds must satisfy 0 < lo < hi, got {(lo, hi)}")
+
         def huber(residual, delta=1e-3):
             abs_r = np.abs(residual)
             return np.where(
@@ -664,22 +689,32 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
 
         num_points = len(L)
         min_L = best_loss_guess
-        
+
+        # Multi-start values for alpha/beta. The literals below reproduce the
+        # historical default-bounds behaviour exactly; a custom range gets a
+        # geometric ladder across it instead, since 0.4/0.5 can sit outside it.
+        if (lo, hi) == cls.DEFAULT_EXPONENT_BOUNDS:
+            exp_starts_small = [0.5]
+            exp_starts_grid = [0.4, 0.5]
+        else:
+            exp_starts_small = [float(np.sqrt(lo * hi))]
+            exp_starts_grid = [float(v) for v in np.geomspace(lo, hi, 4)[:3]]
+
         # FIXED: Initialize a and b closer to 0 or negative for normalized data
         # exp(0) = 1.0, exp(-2) = 0.13. These are realistic scales for normalized A and B.
         if num_points <= 10:
             initialization = [
-                (min_L * 0.9, 0, 0, 0.5, 0.5),
-                (min_L * 0.8, -2, -2, 0.5, 0.5),
-                (min_L * 0.7, 2, 2, 0.5, 0.5),
+                (min_L * e_scale, a0, a0, exp0, exp0)
+                for e_scale, a0 in ((0.9, 0), (0.8, -2), (0.7, 2))
+                for exp0 in exp_starts_small
             ]
         else:
             initialization = list(itertools.product(
-                [min_L * 0.8, min_L * 0.9],  
-                [-2, 0, 2],         # a              
-                [-2, 0, 2],         # b              
-                [0.4, 0.5],         # alpha 
-                [0.4, 0.5],         # beta  
+                [min_L * 0.8, min_L * 0.9],
+                [-2, 0, 2],         # a
+                [-2, 0, 2],         # b
+                exp_starts_grid,    # alpha
+                exp_starts_grid,    # beta
             ))
 
         best_result = None
@@ -700,11 +735,11 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
             try:
                 # FIXED: Allow a and b to be negative, up to -20 (A = 2e-9)
                 bounds = [
-                    (min_L * 0.001, min_L), 
+                    (min_L * 0.001, min_L),
                     (-20, 20),         # a
                     (-20, 20),         # b
-                    (0.25, 0.75),      # alpha 
-                    (0.25, 0.75),      # beta
+                    (lo, hi),          # alpha
+                    (lo, hi),          # beta
                 ]
                 
                 res = minimize(

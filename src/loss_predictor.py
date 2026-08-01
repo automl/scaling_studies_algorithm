@@ -11,14 +11,18 @@ from src.scaling_law_fit import LogLogPowerLawFit, fit_power_law, predict_from_l
 import src.predictor_cache as predictor_cache
 
 class LossPredictorTypes(Enum):
-    def __new__(cls, label: str, color: str):
+    """`value` is the on-disk slug (cache filenames, result dirs) -- never change
+    it. `display_label` is what shows up in figures and can be renamed freely."""
+
+    def __new__(cls, label: str, color: str, display_label: str | None = None):
         obj = object.__new__(cls)
         obj._value_ = label
         obj.color = color
+        obj.display_label = display_label if display_label is not None else label
         return obj
 
-    KAPLAN = ("Indep. PL", "#1f77b4")
-    CHINCHILLA3 = ("Joint Param.", "#ff7f0e")
+    KAPLAN = ("Indep. PL", "#1f77b4", "Kaplan")
+    CHINCHILLA3 = ("Joint Param.", "#ff7f0e", "Chinchilla3")
     GP_POSTERIOR = ("GP Posterior", "#2ca02c")
 
 @dataclass
@@ -84,6 +88,7 @@ def _fit_loss(
     *,
     rows: list[tuple[float, float, float, float]],
     best_loss_guess: float,
+    exponent_bounds: tuple[float, float] | None = None,
     space: Any = None,
     configs: list[dict] | None = None,
     cost_estimator: Any = None,
@@ -172,6 +177,7 @@ def _fit_loss(
             D=pareto_n_tokens,
             L=pareto_losses,
             best_loss_guess=best_loss_guess,
+            exponent_bounds=exponent_bounds,
         )
         return LossFit(predictor_type=predictor_type, chinchilla_params=scaling_params)
 
@@ -317,6 +323,7 @@ def get_loss_fit_trajectory(
     *,
     rows: list[tuple[float, float, float, float]],
     best_loss_guess: float,
+    exponent_bounds: tuple[float, float],
     space: Any = None,
     configs: list[dict] | None = None,
     cost_estimator: Any = None,
@@ -344,6 +351,7 @@ def get_loss_fit_trajectory(
                     predictor_type,
                     rows=rows[:n],
                     best_loss_guess=best_loss_guess,
+                    exponent_bounds=exponent_bounds,
                     space=space,
                     configs=configs,
                     cost_estimator=cost_estimator,
@@ -372,7 +380,12 @@ def get_loss_fit_trajectory(
     params_rows: list[list[float]] = []
     for n in range(1, n_trials + 1):
         try:
-            fit = _fit_loss(predictor_type, rows=rows[:n], best_loss_guess=best_loss_guess)
+            fit = _fit_loss(
+                predictor_type,
+                rows=rows[:n],
+                best_loss_guess=best_loss_guess,
+                exponent_bounds=exponent_bounds,
+            )
         except Exception:
             # Too few points to fit at this trial-prefix (e.g. n=1); leave a
             # failed-fit sentinel so `.predict()` yields NaN, not a hard error.
@@ -392,6 +405,7 @@ def predict_loss(
     *,
     rows: list[tuple[float, float, float, float]],
     best_loss_guess: float,
+    exponent_bounds: tuple[float, float],
     space: Any = None,
     configs: list[dict] | None = None,
     cost_estimator: Any = None,
@@ -402,6 +416,7 @@ def predict_loss(
         predictor_type,
         rows=rows,
         best_loss_guess=best_loss_guess,
+        exponent_bounds=exponent_bounds,
         space=space,
         configs=configs,
         cost_estimator=cost_estimator,

@@ -15,7 +15,30 @@ class BenchmarkEnum(str, Enum):
     LLM = "llm"
     TABPFN = "tabpfn"
 
-RESULTS_BASE_DIR = Path("/work/dlc2workfs2/alipourn-scan")
+TARGET_ENUMS = {
+    BenchmarkEnum.OPENCLIP: openclip.VLMTarget,
+    BenchmarkEnum.LLM: llm.LLMTarget,
+    BenchmarkEnum.TABPFN: tabpfn.TabPFNTarget,
+}
+
+
+def get_target(benchmark: BenchmarkEnum | str, target: str | None):
+    """Resolve a ``--target`` string to the target enum member of that benchmark."""
+    if target is None:
+        return None
+    return TARGET_ENUMS[BenchmarkEnum(benchmark)](target)
+
+
+RESULTS_DIR_ENV_VAR = "SCAN_RESULT_DIR"
+DEFAULT_RESULTS_BASE_DIR = Path("/work/dlc2workfs2/alipourn-scan")
+
+# Root under which every run directory, predictor cache and plot lands. Override
+# per invocation with `SCAN_RESULT_DIR=/my/path python -m src.run ...`; the path
+# below is only the cluster default.
+RESULTS_BASE_DIR = Path(
+    os.environ.get(RESULTS_DIR_ENV_VAR) or DEFAULT_RESULTS_BASE_DIR
+).expanduser()
+
 PREDICTOR_TYPE_ENV_VAR = "SCAN_PREDICTOR_TYPE"
 DEFAULT_PREDICTOR_TYPE = PerformancePredictorType.TABPFN
 
@@ -46,6 +69,7 @@ class BenchmarkConfig:
     seen_datapoints_estimator: Callable
     flops_estimator: Callable
     evaluate_pipeline: Callable
+    query: Callable
     max_evaluation_flops: float
     aspect_ratio_fn: Callable
     data_parameter_name: str
@@ -53,13 +77,13 @@ class BenchmarkConfig:
     min_flops: float
     best_loss_guess: float
 
-def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool, predictor_type: PerformancePredictorType = PerformancePredictorType.TABPFN, lazy=False) -> BenchmarkConfig:
+def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool, predictor_type: PerformancePredictorType = PerformancePredictorType.TABPFN, lazy=False, target=None) -> BenchmarkConfig:
     if isinstance(benchmark, str):
         benchmark = BenchmarkEnum(benchmark)
 
     match benchmark:
         case BenchmarkEnum.OPENCLIP: 
-            bench = openclip.get_benchmark(predictor_type=predictor_type) if not lazy else None
+            bench = openclip.get_benchmark(predictor_type=predictor_type, target=target) if not lazy else None
             # 3.569725e+08 parameters, 2.000000e+08 data points, total flops: 7.815374e+18
             # 2.013121e+06 parameters, 6.000000e+05 data points, total flops: 3.605023e+13
             min_flops = 3.600000e+13
@@ -71,6 +95,7 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool, predictor_type
                 seen_datapoints_estimator=openclip.seen_datapoints_estimator,
                 flops_estimator=openclip.flops_estimator_wrapper(bench),
                 evaluate_pipeline=openclip.evaluate_pipeline_wrapper(bench, lc_aware),
+                query=openclip.query_wrapper(bench),
                 max_evaluation_flops=total_eval_flops,
                 aspect_ratio_fn=openclip.aspect_ratio_fn,
                 data_parameter_name="train_num_samples",
@@ -79,7 +104,7 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool, predictor_type
                 best_loss_guess=0.0001
             )
         case BenchmarkEnum.LLM:
-            bench = llm.get_benchmark(predictor_type=predictor_type) if not lazy else None
+            bench = llm.get_benchmark(predictor_type=predictor_type, target=target) if not lazy else None
             # 9.266657e+08 parameters, 4.000000e+10 data points, total flops: 2.676758e+20
             # 1.628109e+07 parameters, 2.000000e+08 data points, total flops: 2.456771e+16
             min_flops = 2.456771e+16
@@ -91,6 +116,7 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool, predictor_type
                 seen_datapoints_estimator=llm.seen_datapoints_estimator,
                 flops_estimator=llm.flops_estimator,
                 evaluate_pipeline=llm.evaluate_pipeline_wrapper(bench, lc_aware),
+                query=llm.query_wrapper(bench),
                 max_evaluation_flops=total_eval_flops,
                 aspect_ratio_fn=llm.aspect_ratio_fn,
                 data_parameter_name="n_tokens",
@@ -99,7 +125,7 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool, predictor_type
                 best_loss_guess=1.2,
             )
         case BenchmarkEnum.TABPFN:
-            bench = tabpfn.get_benchmark(predictor_type=predictor_type)if not lazy else None
+            bench = tabpfn.get_benchmark(predictor_type=predictor_type, target=target)if not lazy else None
             # 3.398452e+07 parameters, 3.435974e+10 data points, total flops: 7.060368e+18
             # 1.060200e+04 parameters, 1.048576e+06 data points, total flops: 5.676123e+10
             min_flops = 5.676123e+10
@@ -111,6 +137,7 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool, predictor_type
                 seen_datapoints_estimator=tabpfn.seen_datapoints_estimator,
                 flops_estimator=tabpfn.flops_estimator_wrapper(bench),
                 evaluate_pipeline=tabpfn.evaluate_pipeline_wrapper(bench, lc_aware),
+                query=tabpfn.query_wrapper(bench),
                 max_evaluation_flops=total_eval_flops,
                 aspect_ratio_fn=tabpfn.aspect_ratio_fn,
                 data_parameter_name="total_cells",

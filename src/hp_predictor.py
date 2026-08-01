@@ -157,11 +157,11 @@ def _fit_linear_regression_hp(
                 raise ValueError(f"HP '{param_name}' is missing from config: {config}")
             hp_values_param.append(float(config[param_name]))
 
-        log = (
-            isinstance(param, HPOInteger) and param.is_scaling
-            ) or (
-            isinstance(param, HPOInteger | HPOFloat) and param.log
-        )
+        # Only the parameter's own declared log flag decides the fit space.
+        # `is_scaling` used to force it too, which put ordinal-index HPs (e.g.
+        # OpenCLIP's vision_width/text_width, indices into WIDTH_CHOICES) in log
+        # space, where a power law in the index is not a power law in the value.
+        log = isinstance(param, HPOInteger | HPOFloat) and param.log
 
         fit_result = fit_power_law(
             x_flops,

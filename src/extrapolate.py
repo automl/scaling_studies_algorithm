@@ -1,98 +1,227 @@
 import json
 import logging
-import time
-import random
+from importlib.resources import files
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
+import pandas as pd
 
-from neps.status.status import post_run_csv
-from neps.state import NePSState
-from neps.optimizers.scaling_law_guided import fit_pareto_front_loglog
+from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer
 
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def _load_neps_state(root_directory: Path | str) -> tuple[Any, Any]:
-    """Load NePSState and trials from a directory."""
-    root_directory = Path(root_directory)
+def _openclip_arch_stats(df: pd.DataFrame) -> tuple["pd.Series", "pd.Series"]:
+    """Exact (params, total_flops) for OpenCLIP rows, from the benchmark's arch table.
 
-    if not root_directory.exists():
-        raise FileNotFoundError(
-            f"No neps state found at: {root_directory}\n"
-            "Please provide a valid neps results directory."
-        )
-    try:
-        state = NePSState.create_or_load(path=root_directory, load_only=True)
-    except FileNotFoundError as e:
-        raise FileNotFoundError(
-            f"Could not load neps state from: {root_directory}"
-        ) from e
+    data.csv rounds `mparams` to two decimals and reports a measured
+    `compute_seen`, which puts the front ~0.15% off in params and ~3% in FLOPs.
+    `flops_params.json` is what `VLMBenchmark.get_model_stats` reads, so taking
+    the numbers from there makes the reference front exactly commensurate with
+    the `extra.n_param` / `extra.flops` of the trials plotted against it.
+    """
+    table = json.loads(files("scan_benchmark.vlm").joinpath("flops_params.json").read_text())
+    keys = "text_" + df["text_width"].astype(int).astype(str) + "_vision_" + df["vision_width"].astype(int).astype(str)
 
-    space = state.lock_and_get_search_space()
-    trials = state._trial_repo.latest(refresh_cache=True)
-
-    if space is None:
-        raise RuntimeError("Could not load search space from neps state.")
-
-    return state, trials
+    params = keys.map(lambda k: (table.get(k) or {}).get("params"))
+    flops_per_sample = keys.map(lambda k: (table.get(k) or {}).get("flops_per_sample"))
+    total_flops = flops_per_sample * df["total_samples_planned"] * df["training_progress"]
+    return params, total_flops
 
 
-def _load_neps_state_with_retry(root_directory: Path | str, max_retries: int = 10) -> tuple[Any, Any]:
-    """Load NePSState with retry logic to handle concurrent file access."""
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            return _load_neps_state(root_directory)
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries - 1:
-                delay = 0.5 * (2 ** attempt) + random.uniform(0, 0.5)
-                logger.warning(f"Failed to load neps state (attempt {attempt + 1}), retrying in {delay:.2f}s: {e}")
-                time.sleep(delay)
-            continue
+def _openclip_config(row: "pd.Series") -> dict[str, Any]:
+    """Row of vlm/data.csv as an OpenCLIP pipeline-space config.
 
-    raise RuntimeError(
-        f"Failed to load neps state after {max_retries} attempts. Last error: {last_error}"
-    )
-
-
-def get_true_pareto_front(root_directory: Path | str) -> dict[str, list]:
-    """Extract and return Pareto front data from a neps study."""
-    _, trials = _load_neps_state_with_retry(root_directory)
-
-    result = fit_pareto_front_loglog(trials, lc_aware=False)
-    pareto_rows = result[5]
-    pareto_trial_ids = result[7]
-    pareto_configs = [trial.config for trial in trials.values() if trial.id in pareto_trial_ids]
+    Widths go back to their ordinal index, the unit the search space uses.
+    """
+    from src.benchmarks.openclip_space import WIDTH_CHOICES
 
     return {
-        "loss": [r[2] for r in pareto_rows],
-        "flops": [r[3] for r in pareto_rows],
-        "n_params": [float(r[0]) for r in pareto_rows],
-        "n_data": [float(r[1]) for r in pareto_rows],
-        "configs": pareto_configs,
+        "beta1": float(row["beta1"]),
+        "beta2": float(row["beta2"]),
+        "eps": float(row["eps"]),
+        "lr": float(row["lr"]),
+        "warmup_fraction": float(row["warmup_fraction"]),
+        "wd": float(row["wd"]),
+        "text_width": WIDTH_CHOICES.index(int(row["text_width"])),
+        "vision_width": WIDTH_CHOICES.index(int(row["vision_width"])),
+        "train_num_samples": float(row["total_samples_planned"]),
     }
 
 
-def save_pareto_info(pareto_info: dict, output_dir: Path | str) -> None:
+def _llm_config(row: "pd.Series") -> dict[str, Any]:
+    """Row of the LLM splits as a config, in the csv's own (actual) model dims."""
+    return {
+        "beta1": float(row["beta1"]),
+        "beta2": float(row["beta2"]),
+        "cooldown_steps": float(row["cooldown_steps"]),
+        "d_model": int(row["d_model"]),
+        "lr": float(row["lr"]),
+        "n_heads": int(row["n_heads"]),
+        "n_layers": int(row["n_layers"]),
+        "n_tokens": float(row["n_data"]),
+        "weight_decay": float(row["weight_decay"]),
+    }
+
+
+class _CsvSpec:
+    """How to read one benchmark's measured runs into (n_params, n_data, loss, flops).
+
+    The reference front is built from the same measurements the benchmark's own
+    surrogate is fitted on, so the "Empirical Best Loss" line is a measurement
+    rather than a model output.
+    """
+
+    def __init__(
+        self,
+        package: str,
+        csv_names: list[str],
+        default_target: str,
+        completed: Callable[[pd.DataFrame], "pd.Series"],
+        stats: Callable[[pd.DataFrame], tuple["pd.Series", "pd.Series"]],
+        n_data: Callable[[pd.DataFrame], "pd.Series"],
+        config_of_row: Callable[["pd.Series"], dict[str, Any]],
+    ):
+        self.package = package
+        self.csv_names = csv_names
+        self.default_target = default_target
+        self.completed = completed
+        self.stats = stats  # df -> (n_params, flops)
+        self.n_data = n_data
+        self.config_of_row = config_of_row
+
+    def load(self) -> pd.DataFrame:
+        # Resolve through the installed package, the way the benchmarks load their
+        # own splits, rather than through the dep/ checkout.
+        frames = [pd.read_csv(str(files(self.package).joinpath(name))) for name in self.csv_names]
+        return pd.concat(frames, ignore_index=True)
+
+
+CSV_SPECS: dict[str, _CsvSpec] = {
+    "openclip": _CsvSpec(
+        package="scan_benchmark.vlm",
+        csv_names=["data.csv"],
+        default_target="val_loss",
+        completed=lambda df: df["training_progress"] >= 1.0,
+        stats=_openclip_arch_stats,
+        n_data=lambda df: df["samples_seen"],
+        config_of_row=_openclip_config,
+    ),
+    # Exactly what LLMBenchmark.__init__ loads.
+    "llm": _CsvSpec(
+        package="scan_benchmark.llm",
+        csv_names=["splits/train.csv", "splits/test.csv"],
+        default_target="valid_loss",
+        completed=lambda df: df["eval_step"] == df["final_step"],
+        # These splits already carry exact params/flops, no arch table needed.
+        stats=lambda df: (df["n_param"], df["flops_so_far"]),
+        n_data=lambda df: df["n_data"],
+        config_of_row=_llm_config,
+    ),
+}
+
+
+def _enforce_monotonic_params(pareto_front: list[tuple]) -> list[tuple]:
+    if len(pareto_front) <= 1:
+        return pareto_front
+
+    descending = sorted(pareto_front, key=lambda row: row[3], reverse=True)
+    monotonic = [descending[0]]
+    prev_n = descending[0][0]
+    for n_params, n_data, loss, flops in descending[1:]:
+        if n_params <= prev_n:
+            monotonic.append((n_params, n_data, loss, flops))
+            prev_n = n_params
+    return monotonic[::-1]
+
+
+def empirical_pareto_front_from_csv(benchmark_name: str, target: str | None = None) -> dict[str, list]:
+    """Pareto front of the benchmark's measured runs, at their final checkpoint.
+
+    `target` names a column of the benchmark's csv -- every `VLMTarget` /
+    `LLMTarget` value is one -- and defaults to that benchmark's validation loss.
+    Accuracy-like targets are flipped to `1 - acc` so the front minimizes, the
+    same convention `process_seed` uses for the trajectories plotted against it.
+    """
+    from src.plotting.utils import target_loss_key, to_minimizable
+
+    spec = CSV_SPECS.get(benchmark_name)
+    if spec is None:
+        raise ValueError(
+            f"No measured-run csv is registered for '{benchmark_name}'"
+            f" (have: {', '.join(sorted(CSV_SPECS))})"
+        )
+
+    column = target or spec.default_target
+    df = spec.load()
+    if column not in df.columns:
+        raise ValueError(f"'{column}' is not a column of the {benchmark_name} csv(s)")
+
+    df = df[spec.completed(df)]
+    n_params, flops = spec.stats(df)
+    frame = pd.DataFrame({
+        "n_params": pd.to_numeric(n_params, errors="coerce"),
+        "n_data": pd.to_numeric(spec.n_data(df), errors="coerce"),
+        "loss": pd.to_numeric(df[column], errors="coerce"),
+        "flops": pd.to_numeric(flops, errors="coerce"),
+    })
+    frame["loss"] = frame["loss"].map(lambda v: to_minimizable(v, target_loss_key(column)))
+    frame = frame[frame.apply(np.isfinite).all(axis=1) & (frame["flops"] > 0) & (frame["loss"] > 0)]
+    if frame.empty:
+        raise ValueError(f"No completed run of {benchmark_name} has a usable '{column}'")
+
+    rows = list(frame.itertuples(index=True, name=None))  # (idx, n_params, n_data, loss, flops)
+    # Same non-domination the optimizer uses, so this front is directly comparable
+    # to the ones computed from a study's trials.
+    pareto = ScalingLawGuidedOptimizer._compute_pareto_front([r[1:] for r in rows])
+    pareto = _enforce_monotonic_params(pareto)
+
+    row_index = {r[1:]: r[0] for r in rows}
+    configs = [spec.config_of_row(df.loc[row_index[point]]) for point in pareto]
+
+    logger.info(
+        "%s empirical front (%s): %d points, loss %.4f..%.4f, flops %.3e..%.3e",
+        benchmark_name, column, len(pareto),
+        min(p[2] for p in pareto), max(p[2] for p in pareto),
+        min(p[3] for p in pareto), max(p[3] for p in pareto),
+    )
+
+    return {
+        "loss": [float(p[2]) for p in pareto],
+        "flops": [float(p[3]) for p in pareto],
+        "n_params": [float(p[0]) for p in pareto],
+        "n_data": [float(p[1]) for p in pareto],
+        "configs": configs,
+    }
+
+
+def _pareto_info_file(output_dir: Path | str, target: str | None = None) -> Path:
+    """One cached front per target: the objective's and a downstream target's
+    Pareto fronts are different point sets and must not share a file."""
+    if target is None:
+        return Path(output_dir) / "pareto_info.json"
+    from src.plotting.utils import loss_key_slug, target_loss_key
+
+    return Path(output_dir) / f"pareto_info_{loss_key_slug(target_loss_key(target))}.json"
+
+
+def save_pareto_info(pareto_info: dict, output_dir: Path | str, target: str | None = None) -> None:
     """Save Pareto front information to JSON file."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_file = output_dir / "pareto_info.json"
+    output_file = _pareto_info_file(output_dir, target)
     with open(output_file, 'w') as f:
         json.dump(pareto_info, f, indent=2)
     logger.info(f"Saved pareto_info to {output_file}")
 
 
-def load_pareto_info(output_dir: Path | str) -> dict[str, list] | None:
+def load_pareto_info(output_dir: Path | str, target: str | None = None) -> dict[str, list] | None:
     """Load Pareto front information from JSON file if it exists."""
-    output_dir = Path(output_dir)
-    output_file = output_dir / "pareto_info.json"
+    output_file = _pareto_info_file(output_dir, target)
 
     if output_file.exists():
         with open(output_file, 'r') as f:
@@ -101,17 +230,33 @@ def load_pareto_info(output_dir: Path | str) -> dict[str, list] | None:
     return None
 
 
-def load_or_generate_pareto_info(benchmark_name: str) -> dict[str, list]:
-    from src.baselines.configs import OptimizerEnum
-    from src.benchmarks.configs import get_results_dir
-    comprehensive_study_root_dir = (
-        # get_results_dir() / benchmark_name / f"{OptimizerEnum.GRID_SEARCH}" / "seed_40"
-        Path("/work/dlc2workfs2/alipourn-scan/test") / benchmark_name / f"{OptimizerEnum.GRID_SEARCH}" / "seed_40"
-    )
-    summary_dir = Path(comprehensive_study_root_dir) / "summary"
+def empirical_pareto_dir(benchmark_name: str) -> Path:
+    """Cache location of a benchmark's empirical fronts.
 
-    pareto_info = load_pareto_info(summary_dir)
+    Deliberately *not* under a predictor directory: the front comes from measured
+    runs, so it is the same whichever surrogate the plots are using.
+    """
+    from src.benchmarks.configs import RESULTS_BASE_DIR
+
+    return RESULTS_BASE_DIR / "empirical_pareto" / benchmark_name
+
+
+def load_or_generate_pareto_info(benchmark_name: str, target: str | None = None) -> dict[str, list] | None:
+    """Empirical reference front of a benchmark's measured runs, cached as JSON.
+
+    `target` selects a metric column (see `empirical_pareto_front_from_csv`);
+    without it, the benchmark's validation loss. Returns None when the benchmark
+    has no measured-run csv, so plots degrade to "no reference line" rather than
+    silently drawing another metric's front.
+    """
+    summary_dir = empirical_pareto_dir(benchmark_name)
+
+    pareto_info = load_pareto_info(summary_dir, target)
     if pareto_info is None:
-        pareto_info = get_true_pareto_front(comprehensive_study_root_dir)
-        save_pareto_info(pareto_info, summary_dir)
+        try:
+            pareto_info = empirical_pareto_front_from_csv(benchmark_name, target=target)
+        except ValueError as e:
+            logger.warning(f"No empirical reference front for {benchmark_name} / '{target}': {e}")
+            return None
+        save_pareto_info(pareto_info, summary_dir, target)
     return pareto_info

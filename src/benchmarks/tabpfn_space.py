@@ -19,8 +19,12 @@ MAX_FEATURES = 32
 NUM_DATAPOINTS_MAX = 128
 
 
-def get_benchmark(predictor_type: PerformancePredictorType = PerformancePredictorType.TABPFN) -> TabPFNBenchmark:
-    return TabPFNBenchmark(target=TABPFN_TARGETS, predictor_type=predictor_type)
+def get_benchmark(predictor_type: PerformancePredictorType = PerformancePredictorType.TABPFN,
+                  target: TabPFNTarget | None = None,
+                  ) -> TabPFNBenchmark:
+    if target is None:
+        target = TABPFN_TARGETS[0]
+    return TabPFNBenchmark(target=target, predictor_type=predictor_type)
 
 
 def normalize_tabpfn_config(raw_conf: dict) -> dict:
@@ -43,21 +47,61 @@ def parameters_estimator_wrapper(bench: TabPFNBenchmark):
         return bench.model_params(config)
     return parameters_estimator
     
-def evaluate_pipeline_wrapper(bench: TabPFNBenchmark, lc_aware: bool = False):
-    def evaluate_pipeline(lr, effective_batch_size, embedding_size, total_cells, num_layers):
-        res = normalize_tabpfn_config(
-            dict(
-                lr=lr,
-                effective_batch_size=effective_batch_size,
-                embedding_size=embedding_size,
-                total_cells=total_cells,
-                num_layers=num_layers,
-            )
+def build_config(lr, effective_batch_size, embedding_size, total_cells, num_layers) -> TabPFNConfig:
+    """Snap raw search-space values and turn them into a `TabPFNConfig`."""
+    res = normalize_tabpfn_config(
+        dict(
+            lr=lr,
+            effective_batch_size=effective_batch_size,
+            embedding_size=embedding_size,
+            total_cells=total_cells,
+            num_layers=num_layers,
         )
-        total_cells = res["total_cells"]
+    )
+    # max_features / num_datapoints_max injected as constants by normalize_tabpfn_config.
+    return TabPFNConfig(**res)
 
-        # max_features / num_datapoints_max injected as constants by normalize_tabpfn_config.
-        config = TabPFNConfig(**res)
+
+def build_info_dict(result: dict, config: TabPFNConfig) -> dict:
+    """The `info_dict` neps stores as `report.yaml:extra` for a single benchmark query."""
+    return {
+        "n_param": int(result["model_stats"]["params"]),
+        "flops": float(result["model_stats"]["flops"]),
+        "n_data": config.total_cells,
+        "predictions": result["predictions"],
+        "model_stats": result["model_stats"],
+    }
+
+
+def query_wrapper(bench: TabPFNBenchmark):
+    """Query the surrogate for one config and return its `info_dict`.
+
+    Shared by `evaluate_pipeline` and by post-hoc evaluation of stored configs
+    (`src/posthoc_downstream_eval.py`), which only needs the predictions.
+    """
+    def query(config: TabPFNConfig | None = None, **raw_conf) -> dict:
+        if config is None:
+            config = build_config(**raw_conf)
+        result = bench.query(config)
+        if float((result.get("predictions") or {}).get('mean', float('nan'))) is float('nan'):
+            print(f"Benchmark query failed with config: {config} result: {result}")
+        return build_info_dict(result, config)
+
+    return query
+
+
+def evaluate_pipeline_wrapper(bench: TabPFNBenchmark, lc_aware: bool = False):
+    query = query_wrapper(bench)
+
+    def evaluate_pipeline(lr, effective_batch_size, embedding_size, total_cells, num_layers):
+        config = build_config(
+            lr=lr,
+            effective_batch_size=effective_batch_size,
+            embedding_size=embedding_size,
+            total_cells=total_cells,
+            num_layers=num_layers,
+        )
+        total_cells = config.total_cells
         lc = None
         if lc_aware:
             lc = []
@@ -81,7 +125,7 @@ def evaluate_pipeline_wrapper(bench: TabPFNBenchmark, lc_aware: bool = False):
                 objective = float(result.get("predictions", {}).get("mean", float('nan')))
                 if objective is float('nan') or flops is float('nan'):
                     return {
-                        "objective_to_minimize": float('nan'), 
+                        "objective_to_minimize": float('nan'),
                         "cost": flops,
                         "learning_curve": None,
                         "info_dict": {
@@ -94,21 +138,12 @@ def evaluate_pipeline_wrapper(bench: TabPFNBenchmark, lc_aware: bool = False):
                     }
                 lc.append((n_data, flops, objective))
         config.total_cells = total_cells
-        result = bench.query(config)
-        objective = float((result.get("predictions") or {}).get('mean', float('nan')))
-        if objective is float('nan'):
-            print(f"Benchmark query failed with config: {config} result: {result}")
+        info_dict = query(config=config)
         return {
-            "objective_to_minimize": objective, 
-            "cost": float(result["model_stats"]["flops"]), 
+            "objective_to_minimize": float((info_dict["predictions"] or {}).get('mean', float('nan'))),
+            "cost": info_dict["flops"],
             "learning_curve": lc,
-            "info_dict": {
-                "n_param": int(result["model_stats"]["params"]),
-                "flops": float(result["model_stats"]["flops"]),
-                "n_data": total_cells,
-                "predictions": result["predictions"],
-                "model_stats": result["model_stats"],
-            },
+            "info_dict": info_dict,
         }
     return evaluate_pipeline
 

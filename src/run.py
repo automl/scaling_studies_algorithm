@@ -50,7 +50,6 @@ if __name__ == '__main__':
         # OptimizerEnum.CHINCHILLA_GEMSTONES, 
         OptimizerEnum.RANDOM_SEARCH,
         OptimizerEnum.CARBS,
-        # OptimizerEnum.GRID_SEARCH
         ] if args.optimizer == "" else [OptimizerEnum(args.optimizer)]
 
     for optimizer_name in optimizers:
@@ -89,9 +88,9 @@ if __name__ == '__main__':
                 neps.run(
                     pipeline_space=benchmark.space,
                     root_directory=root_dir,
-                    cost_to_spend=benchmark.max_evaluation_flops if optimizer_name != OptimizerEnum.GRID_SEARCH else None, # we want to run the full grid search
+                    cost_to_spend=benchmark.max_evaluation_flops,
                     worker_id=f"worker_1-{socket.gethostname()}-{os.getpid()}",
-                    overwrite_root_directory=optimizer_name != OptimizerEnum.GRID_SEARCH,
+                    overwrite_root_directory=True,
                     optimizer=optimizer,
                     **kwargs,
                 )

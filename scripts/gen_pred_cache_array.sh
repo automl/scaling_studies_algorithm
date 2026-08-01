@@ -1,52 +1,76 @@
 #!/bin/bash
 
-#SBATCH --partition=testdlc2_gpu-l40s
+#SBATCH --partition=mldlc2_cpu-epyc9655
 #SBATCH --ntasks=1
-#SBATCH --gpus=1
-#SBATCH --mem=5G
-#SBATCH --job-name=llm_pred
-#SBATCH --output=/home/alipourn/scaling_studies_algorithm/logs/%x-%a-%j.log
-#SBATCH --array=0-175
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=10G
+#SBATCH --job-name=scan_pred_cache
+#SBATCH --output=logs/%x-%a-%j.log
+#SBATCH --array=0-87
 
-source /home/alipourn/miniconda3/etc/profile.d/conda.sh
-conda activate scaling
+# Warms the predictor cache for every acquired study: one array task per
+# (benchmark, optimizer, seed, pred) combination -- the same grid as
+# scripts/eval_with_seeds_array.sh, which must have finished first.
+#
+#   sbatch --partition=<your_gpu_partition> scripts/gen_pred_cache_array.sh
+#
+# `scripts/gen_pred_cache_array.sh --count` prints the array size for the lists
+# below.
+#
+# Optional environment:
+#   OVERRIDE=1      refit everything and overwrite the cache instead of reusing it
+#   SCAN_TARGET=... cache a downstream target instead of each study's own
+#                   objective (openclip only, and only after
+#                   scripts/down_eval_with_seeds_array.sh has written it)
+#   SCAN_RESULT_DIR results root (see scripts/_common.sh)
+# Pass them through with `sbatch --export=ALL,OVERRIDE=1 ...`.
 
-export PYTHONPATH="/home/alipourn/scaling_studies_algorithm:$PYTHONPATH"
+set -euo pipefail
 
-benchmark="openclip"
-PREDS=(ensemble_xgb ensemble_lightgbm ensemble_mix tabpfn)
-optimizers=(chinchilla_approach1 chinchilla_approach2 random_search carbs)
+BENCHMARKS=(llm openclip)
+SEEDS=(40 41 42 43 44 45 46 47 48 49 50)
+OPTIMIZERS=(chinchilla_approach1 chinchilla_approach2 random_search carbs)
+PREDS=(tabpfn)
 
-# Map SLURM_ARRAY_TASK_ID to optimizer x seed (40-50) x pred
-n_optimizers=${#optimizers[@]}
-n_seeds=11
+NUM_BENCHMARKS=${#BENCHMARKS[@]}
+NUM_OPTIMIZERS=${#OPTIMIZERS[@]}
+NUM_SEEDS=${#SEEDS[@]}
+NUM_PREDS=${#PREDS[@]}
+TOTAL=$(( NUM_BENCHMARKS * NUM_OPTIMIZERS * NUM_SEEDS * NUM_PREDS ))
 
-idx=$SLURM_ARRAY_TASK_ID
+if [[ "${1:-}" == "--count" ]]; then
+    echo "$TOTAL combinations -> use #SBATCH --array=0-$(( TOTAL - 1 ))"
+    exit 0
+fi
 
-optimizer_idx=$(( idx % n_optimizers ))
-idx=$(( idx / n_optimizers ))
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-seed=$(( 40 + idx % n_seeds ))
-idx=$(( idx / n_seeds ))
+idx=${SLURM_ARRAY_TASK_ID:?SLURM_ARRAY_TASK_ID is unset -- submit with sbatch}
+if (( idx >= TOTAL )); then
+    echo "Task $idx is outside the 0-$(( TOTAL - 1 )) grid; nothing to do."
+    exit 0
+fi
 
+bench_idx=$(( idx % NUM_BENCHMARKS )); idx=$(( idx / NUM_BENCHMARKS ))
+opt_idx=$((   idx % NUM_OPTIMIZERS )); idx=$(( idx / NUM_OPTIMIZERS ))
+seed_idx=$((  idx % NUM_SEEDS ));      idx=$(( idx / NUM_SEEDS ))
 pred_idx=$idx
 
-optimizer="${optimizers[$optimizer_idx]}"
-pred="${PREDS[$pred_idx]}"
+benchmark=${BENCHMARKS[$bench_idx]}
+optimizer=${OPTIMIZERS[$opt_idx]}
+seed=${SEEDS[$seed_idx]}
+pred=${PREDS[$pred_idx]}
 
-# Set OVERRIDE=1 (e.g. `sbatch --export=ALL,OVERRIDE=1 gen_pred_cache_array.sh`)
-# to force every fit to be recomputed and the cache overwritten instead of
-# reusing whatever is already cached.
-# OVERRIDE_FLAG=()
-# if [ "${OVERRIDE:-0}" = "1" ]; then
-#     OVERRIDE_FLAG=(--override)
-# fi
+OVERRIDE_FLAG=()
+if [[ "${OVERRIDE:-0}" == "1" ]]; then
+    OVERRIDE_FLAG=(--override)
+fi
 
-echo "Task $SLURM_ARRAY_TASK_ID: optimizer=$optimizer  benchmark=$benchmark  seed=$seed  pred=$pred  override=${OVERRIDE:-0}"
+echo "Task $SLURM_ARRAY_TASK_ID: benchmark=$benchmark optimizer=$optimizer seed=$seed pred=$pred override=${OVERRIDE:-0}"
 
-SCAN_BENCH_MODELS_DIR_LLM="/work/dlc2workfs2/alipourn-scan/llm_models" SCAN_BENCH_MODELS_DIR_VLM="/work/dlc2workfs2/alipourn-scan/vlm_models" python -m src.plotting.pred_cache_gen \
+python -m src.plotting.pred_cache_gen \
     --optimizer "$optimizer" \
     --benchmark "$benchmark" \
     --seed "$seed" \
     --pred "$pred" \
-    --override
+    "${OVERRIDE_FLAG[@]}"

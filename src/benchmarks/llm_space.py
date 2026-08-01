@@ -27,12 +27,13 @@ LLM_TARGETS = [
     # LLMTarget.PIQA_ACC
 ]
 
-def get_benchmark(seed: int = 1, predictor_type: PerformancePredictorType = PerformancePredictorType.TABPFN,) -> LLMBenchmark:
-    # target=None would fall back to LLMTarget.default() ("test_loss"), which
-    # is NOT what LLM_TARGETS enables (VAL_LOSS / "valid_loss") -- pass the
-    # list explicitly so LLMBenchmark predicts the intended target.
+def get_benchmark(predictor_type: PerformancePredictorType = PerformancePredictorType.TABPFN,
+                  target: LLMTarget | None = None,
+                  ) -> LLMBenchmark:
+    if target is None:
+        target = LLM_TARGETS[0]
     return LLMBenchmark(
-        target=LLM_TARGETS,
+        target=target,
         predictor_type=predictor_type
     )
 
@@ -96,43 +97,89 @@ def parameters_estimator(**conf):
     stats = config.compute_model_stats()
     return stats["total_params"]
     
-def evaluate_pipeline_wrapper(bench: LLMBenchmark, lc_aware: bool = False):
-    def evaluate_pipeline(lr, weight_decay, beta1, beta2, cooldown_steps, d_model, n_layers, n_heads, n_tokens) -> dict:
-        normalized_conf = normalize_llm_config({
-            "lr": lr,
-            "weight_decay": weight_decay,
-            "beta1": beta1,
-            "beta2": beta2,
-            "cooldown_steps": cooldown_steps,
-            "d_model": d_model,
-            "n_layers": n_layers,
-            "n_heads": n_heads,
-            "n_tokens": n_tokens,
-        })
-        
-        lr = normalized_conf["lr"]
-        weight_decay = normalized_conf["weight_decay"]
-        beta1 = normalized_conf["beta1"]
-        beta2 = normalized_conf["beta2"]
-        cooldown_steps = normalized_conf["cooldown_steps"]
-        d_model = normalized_conf["d_model"]
-        n_layers = normalized_conf["n_layers"]
-        n_heads = normalized_conf["n_heads"]
-        n_tokens = normalized_conf["n_tokens"]
+def build_config(lr, weight_decay, beta1, beta2, cooldown_steps, d_model, n_layers, n_heads, n_tokens) -> LLMConfig:
+    """Snap raw search-space values and turn them into a fully trained `LLMConfig`."""
+    normalized_conf = normalize_llm_config({
+        "lr": lr,
+        "weight_decay": weight_decay,
+        "beta1": beta1,
+        "beta2": beta2,
+        "cooldown_steps": cooldown_steps,
+        "d_model": d_model,
+        "n_layers": n_layers,
+        "n_heads": n_heads,
+        "n_tokens": n_tokens,
+    })
 
-        config = LLMConfig(
+    return LLMConfig(
+        d_model=normalized_conf["d_model"],
+        n_layers=int(normalized_conf["n_layers"]),
+        n_heads=normalized_conf["n_heads"],
+        lr=round(normalized_conf["lr"], 7),
+        weight_decay=round(normalized_conf["weight_decay"], 7),
+        beta1=round(normalized_conf["beta1"], 7),
+        beta2=round(normalized_conf["beta2"], 7),
+        warmup_steps=0.1,
+        cooldown_steps=round(normalized_conf["cooldown_steps"], 7),
+        n_tokens=normalized_conf["n_tokens"],
+        training_progress=1.0
+    )
+
+
+def build_info_dict(result: dict, config: LLMConfig) -> dict:
+    """The `info_dict` neps stores as `report.yaml:extra` for a single benchmark query."""
+    return {
+        "n_param": int(result["model_stats"]["total_params"]),
+        "flops": float(result["model_stats"]["total_training_flops"]),
+        "n_data": config.n_tokens,
+        "predictions": result["predictions"],
+        "model_stats": result["model_stats"],
+    }
+
+
+def query_wrapper(bench: LLMBenchmark):
+    """Query the surrogate for one config and return its `info_dict`.
+
+    Shared by `evaluate_pipeline` and by post-hoc evaluation of stored configs
+    (`src/posthoc_downstream_eval.py`), which only needs the predictions.
+    """
+    def query(config: LLMConfig | None = None, **raw_conf) -> dict:
+        if config is None:
+            config = build_config(**raw_conf)
+        config.training_progress = 1.0  # for double caution
+        try:
+            result = bench.query(config)
+        except Exception as e:
+            stats = config.compute_model_stats()
+            print(f"Benchmark query failed with config: {config}: {e}")
+            return {
+                "n_param": int(stats["total_params"]),
+                "flops": float(stats["total_training_flops"]),
+                "n_data": config.n_tokens,
+                "predictions": None,
+                "model_stats": None,
+            }
+        return build_info_dict(result, config)
+
+    return query
+
+
+def evaluate_pipeline_wrapper(bench: LLMBenchmark, lc_aware: bool = False):
+    query = query_wrapper(bench)
+
+    def evaluate_pipeline(lr, weight_decay, beta1, beta2, cooldown_steps, d_model, n_layers, n_heads, n_tokens) -> dict:
+        config = build_config(
+            lr=lr,
+            weight_decay=weight_decay,
+            beta1=beta1,
+            beta2=beta2,
+            cooldown_steps=cooldown_steps,
             d_model=d_model,
-            n_layers=int(n_layers),
+            n_layers=n_layers,
             n_heads=n_heads,
-            lr=round(lr, 7),
-            weight_decay=round(weight_decay, 7),
-            beta1=round(beta1, 7),
-            beta2=round(beta2, 7),
-            warmup_steps=0.1,
-            cooldown_steps=round(cooldown_steps, 7),
             n_tokens=n_tokens,
-            training_progress=1.0
         )
+        n_tokens = config.n_tokens
         lc = None
         results = []
         print(f"lc_aware {lc_aware}")
@@ -150,34 +197,15 @@ def evaluate_pipeline_wrapper(bench: LLMBenchmark, lc_aware: bool = False):
                     flops = float(result["model_stats"]["total_training_flops"])
                     lc.append((n_data, flops, float(result["predictions"]["mean"])))
         config.training_progress = 1.0 # for double caution
-        try:
-            result = bench.query(config) if not lc_aware else results[-1]
-        except Exception as e:
-            return {
-                "objective_to_minimize": float('nan'), 
-                "cost": float(config.compute_model_stats()["total_training_flops"]), 
-                "learning_curve": lc,
-                "info_dict": {
-                    "n_param": int(config.compute_model_stats()["total_params"]),
-                    "flops": float(config.compute_model_stats()["total_training_flops"]),
-                    "n_data": n_tokens,
-                    "predictions": None,
-                    "model_stats": None,
-                },
-            }
-        # if result["failed"]:
-            # print(f"Benchmark query failed with config: {config}")
+        if lc_aware and results:
+            info_dict = build_info_dict(results[-1], config)
+        else:
+            info_dict = query(config=config)
         return {
-            "objective_to_minimize": float((result.get("predictions") or {}).get("mean", float('nan'))),
-            "cost": float(result["model_stats"]["total_training_flops"]), 
+            "objective_to_minimize": float((info_dict["predictions"] or {}).get("mean", float('nan'))),
+            "cost": info_dict["flops"],
             "learning_curve": lc,
-            "info_dict": {
-                "n_param": int(result["model_stats"]["total_params"]),
-                "flops": float(result["model_stats"]["total_training_flops"]),
-                "n_data": n_tokens,
-                "predictions": result["predictions"],
-                "model_stats": result["model_stats"],
-            },
+            "info_dict": info_dict,
         }
     return evaluate_pipeline
 

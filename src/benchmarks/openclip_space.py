@@ -11,17 +11,24 @@ WIDTH_CHOICES = [32, 64, 128, 192, 256, 320, 384, 448, 512, 768, 1024]
 
 OPENCLIP_TARGETS = [
     VLMTarget.VAL_LOSS, 
-    # VLMTarget.TEST_LOSS,
-    # VLMTarget.RETRIEVAL_MSCOCO, 
-    # VLMTarget.CIFAR10, 
-    # VLMTarget.VTAB_CIFAR100, 
-    # VLMTarget.IMAGENET1K,
-    # VLMTarget.IMAGENETV2, 
-    # VLMTarget.MNIST,
-    # VLMTarget.FAIRNESS_DOLLAR_STREET,
 ]
-def get_benchmark(predictor_type: PerformancePredictorType = PerformancePredictorType.TABPFN) -> VLMBenchmark:
-    return VLMBenchmark(target=OPENCLIP_TARGETS, predictor_type=predictor_type)
+OPENCLIP_DOWN_TARGET = VLMTarget.IMAGENET1K
+AVAILABLE_TARGETS = [
+    VLMTarget.VAL_LOSS,
+    VLMTarget.TEST_LOSS,
+    VLMTarget.RETRIEVAL_MSCOCO, 
+    VLMTarget.CIFAR10, 
+    VLMTarget.VTAB_CIFAR100, 
+    VLMTarget.IMAGENET1K,
+    VLMTarget.MNIST,
+    VLMTarget.FAIRNESS_DOLLAR_STREET,
+]
+def get_benchmark(predictor_type: PerformancePredictorType = PerformancePredictorType.TABPFN,
+                 target: VLMTarget | None = None,
+                ) -> VLMBenchmark:
+    if target is None:
+        target = OPENCLIP_TARGETS[0]
+    return VLMBenchmark(target=target, predictor_type=predictor_type)
 
 
 def normalize_openclip_config(raw_conf: dict) -> dict:
@@ -77,41 +84,79 @@ def parameters_estimator_wrapper(bench: VLMBenchmark):
 
     return parameters_estimator
     
-def evaluate_pipeline_wrapper(bench: VLMBenchmark, lc_aware: bool = False):
-    def evaluate_pipeline(lr, wd, beta1, beta2, warmup_fraction, eps, vision_width, text_width, train_num_samples):
-        normalized_conf = normalize_openclip_config({
-            "lr": lr,
-            "wd": wd,
-            "beta1": beta1,
-            "beta2": beta2,
-            "warmup_fraction": warmup_fraction,
-            "eps": eps,
-            "vision_width": vision_width,
-            "text_width": text_width,
-            "train_num_samples": train_num_samples,
-        })
+def build_config(lr, wd, beta1, beta2, warmup_fraction, eps, vision_width, text_width, train_num_samples) -> VLMConfig:
+    """Snap raw search-space values and turn them into a fully trained `VLMConfig`."""
+    normalized_conf = normalize_openclip_config({
+        "lr": lr,
+        "wd": wd,
+        "beta1": beta1,
+        "beta2": beta2,
+        "warmup_fraction": warmup_fraction,
+        "eps": eps,
+        "vision_width": vision_width,
+        "text_width": text_width,
+        "train_num_samples": train_num_samples,
+    })
 
-        lr = normalized_conf["lr"]
-        wd = normalized_conf["wd"]
-        beta1 = normalized_conf["beta1"]
-        beta2 = normalized_conf["beta2"]
-        warmup_fraction = normalized_conf["warmup_fraction"]
-        eps = normalized_conf["eps"]
-        vision_width = normalized_conf["vision_width"]
-        text_width = normalized_conf["text_width"]
-        train_num_samples = int(normalized_conf["train_num_samples"])
-        config = VLMConfig(
-            lr=round(lr, 7),
-            wd=round(wd, 7),
-            beta1=round(beta1, 7),
-            beta2=round(beta2, 7),
-            warmup_fraction=round(warmup_fraction, 7),
-            eps=round(eps, 10),
+    return VLMConfig(
+        lr=round(normalized_conf["lr"], 7),
+        wd=round(normalized_conf["wd"], 7),
+        beta1=round(normalized_conf["beta1"], 7),
+        beta2=round(normalized_conf["beta2"], 7),
+        warmup_fraction=round(normalized_conf["warmup_fraction"], 7),
+        eps=round(normalized_conf["eps"], 10),
+        vision_width=normalized_conf["vision_width"],
+        text_width=normalized_conf["text_width"],
+        total_samples_planned=int(normalized_conf["train_num_samples"]),
+        training_progress=1.0
+    )
+
+
+def build_info_dict(result: dict, config: VLMConfig) -> dict:
+    """The `info_dict` neps stores as `report.yaml:extra` for a single benchmark query."""
+    return {
+        "n_param": int(result["model_stats"]["params"]),
+        "flops": float(result["model_stats"]["total_flops"]),
+        "n_data": int(config.total_samples_planned),
+        "predictions": result["predictions"],
+        "model_stats": result["model_stats"],
+    }
+
+
+def query_wrapper(bench: VLMBenchmark):
+    """Query the surrogate for one config and return its `info_dict`.
+
+    Shared by `evaluate_pipeline` and by post-hoc evaluation of stored configs
+    (`src/posthoc_downstream_eval.py`), which only needs the predictions.
+    """
+    def query(config: VLMConfig | None = None, **raw_conf) -> dict:
+        if config is None:
+            config = build_config(**raw_conf)
+        config.training_progress = 1.0  # for double caution
+        result = bench.query(config)
+        if result["failed"]:
+            print(f"Benchmark query failed with config: {config}")
+        return build_info_dict(result, config)
+
+    return query
+
+
+def evaluate_pipeline_wrapper(bench: VLMBenchmark, lc_aware: bool = False):
+    query = query_wrapper(bench)
+
+    def evaluate_pipeline(lr, wd, beta1, beta2, warmup_fraction, eps, vision_width, text_width, train_num_samples):
+        config = build_config(
+            lr=lr,
+            wd=wd,
+            beta1=beta1,
+            beta2=beta2,
+            warmup_fraction=warmup_fraction,
+            eps=eps,
             vision_width=vision_width,
             text_width=text_width,
-            total_samples_planned=train_num_samples,
-            training_progress=1.0
+            train_num_samples=train_num_samples,
         )
+        train_num_samples = config.total_samples_planned
         lc = None
         logging.info(f"lc_aware option is set to {lc_aware}")
         if lc_aware:
@@ -130,35 +175,20 @@ def evaluate_pipeline_wrapper(bench: VLMBenchmark, lc_aware: bool = False):
             for result in results:
                 if result["failed"]:
                     return {
-                        "objective_to_minimize": float('nan'), 
-                        "cost": float(result["model_stats"]["total_flops"]), 
+                        "objective_to_minimize": float('nan'),
+                        "cost": float(result["model_stats"]["total_flops"]),
                         "learning_curve": None,
-                        "info_dict": {
-                            "n_param": int(result["model_stats"]["params"]),
-                            "flops": float(result["model_stats"]["total_flops"]),
-                            "n_data": train_num_samples,
-                            "predictions": result["predictions"],
-                            "model_stats": result["model_stats"],
-                        },
+                        "info_dict": build_info_dict(result, config),
                     }
                 n_data = config.training_progress * train_num_samples # num tokens seen so far
                 flops = float(result["model_stats"]["total_flops"])
                 lc.append((n_data, flops, float(result["predictions"]["mean"])))
-        config.training_progress = 1.0 # for double caution
-        result = bench.query(config)
-        if result["failed"]:
-            print(f"Benchmark query failed with config: {config}")
+        info_dict = query(config=config)
         return {
-            "objective_to_minimize": float((result.get("predictions") or {}).get("mean", float('nan'))),
-            "cost": float(result["model_stats"]["total_flops"]), 
+            "objective_to_minimize": float((info_dict["predictions"] or {}).get("mean", float('nan'))),
+            "cost": info_dict["flops"],
             "learning_curve": lc,
-            "info_dict": {
-                "n_param": int(result["model_stats"]["params"]),
-                "flops": float(result["model_stats"]["total_flops"]),
-                "n_data": train_num_samples,
-                "predictions": result["predictions"],
-                "model_stats": result["model_stats"],
-            },
+            "info_dict": info_dict,
         }
     return evaluate_pipeline
 
@@ -282,7 +312,7 @@ def get_macro_params_bounds(bench: VLMBenchmark) -> tuple[tuple[float, float, fl
 def get_pipeline_space():
     space = PipelineScalingConfig()
     return space
-
+    
 if __name__ == '__main__':
 
     bench = get_benchmark()

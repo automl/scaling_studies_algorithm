@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 from neps.state.trial import State
 
 from src.benchmarks.configs import get_benchmark, get_predictor_type
+from src.baselines.chinchilla_guided_scaling import Chinchilla_Guided_Scaling
 from src.scaling_law_fit import fit_power_law, predict_from_loglog_fit
 from src.plotting.plot_styles import BENCHMARK_TITLES
 from src.plotting.utils import (
@@ -36,40 +37,13 @@ from src.plotting.utils import (
     _normalize_flop_counts,
     _get_hypervolume_bounds,
     _get_common_xlim,
+    _extend_curve_to,
     _replot_lines,
     split_by_priors,
+    is_higher_better,
+    target_from_loss_key,
+    to_minimizable,
 )
-
-# Empirical Pareto front computed from scripts/data.csv (loss=val/val_loss, flops=total_flops,
-# n_param=parameters), non-dominated points sorted by FLOPs. Hardcoded here since this is the
-# comprehensive ground-truth dataset, replacing the single-seed grid_search-derived front.
-_EMPIRICAL_PARETO_FLOPS = np.array([
-    10727293440.0, 15250965504.0, 29219162112.0, 46698451968.0, 46872168960.0,
-    124048359936.0, 633350240256.0, 637579564032.0, 1805750685696.0, 2316040848384.0,
-    7168117874688.0, 7892801894400.0, 14382041579520.0, 27741553582080.0, 28489145041920.0,
-    31342624558080.0, 57084027856896.0, 62903361411072.0, 66544722470400.0, 133554345581568.0,
-    228938713448448.0, 252576154598400.0, 442440100988928.0, 456389110984704.0, 459788497035264.0,
-    877991642818560.0, 1091691656832000.0, 1762967723753472.0, 1794858024357888.0, 1848333694390272.0,
-    3695874609924096.0, 7046782151347200.0, 7106065163904000.0, 2.81844992704512e+16,
-])
-_EMPIRICAL_PARETO_LOSS = np.array([
-    2.1019073362307004, 1.8585961785477896, 1.3148221568553708, 1.29471607444187, 1.1672652121051217,
-    1.1392895887547638, 1.0693727648443505, 1.0468241217458851, 1.0270189261051808, 1.0215362563806896,
-    1.002541976248419, 0.9815379456995288, 0.9795148752455134, 0.9750420943528296, 0.9692769562704294,
-    0.9633090722127235, 0.953561184771388, 0.9342086057295091, 0.9249831785006488, 0.9154967823706102,
-    0.9131693685073212, 0.907456222892506, 0.9049312442427132, 0.9009358285851098, 0.8935840906536517,
-    0.8775050381348896, 0.8697598909808827, 0.8619308802262822, 0.8547532442959588, 0.8425618700451499,
-    0.820608968657325, 0.8122687703344127, 0.8078278559475317, 0.8017667817515152,
-])
-_EMPIRICAL_PARETO_NPARAM = np.array([
-    930.0, 930.0, 6202.0, 930.0, 930.0,
-    3002.0, 930.0, 930.0, 6202.0, 3002.0,
-    6202.0, 3002.0, 10602.0, 39626.0, 19402.0,
-    10058.0, 10602.0, 5354.0, 3002.0, 3002.0,
-    37002.0, 3002.0, 141578.0, 10602.0, 10602.0,
-    73610.0, 10058.0, 73610.0, 73610.0, 37002.0,
-    37002.0, 141578.0, 277514.0, 141578.0,
-])
 
 logging.getLogger("fontTools").setLevel(logging.WARNING)
 
@@ -119,8 +93,36 @@ def _serialize_process_seed_input(
     )
 
 
-def _get_best_loss_guess(benchmark_name: str) -> float:
+#: Achievable top-1 accuracy ceiling per accuracy-like target. Used to bound
+#: Chinchilla3's irreducible-error term E, since those targets are extracted as
+#: `1 - acc` and so bottom out at `1 - ceiling`, not at 0. ImageNet-1k SOTA is
+#: ~90% top-1 (https://huggingface.co/spaces/Bekhouche/ImageNet-1k_leaderboard).
+ACCURACY_CEILINGS: dict[str, float] = {
+    "imagenet1k_acc1": 0.90,
+}
+DEFAULT_ACCURACY_CEILING = 0.95
+
+#: alpha/beta range for accuracy-like targets. Error rates fall much more slowly
+#: in N and D than a training loss does -- measured alpha ~= 0.09, beta ~= 0.06 on
+#: the OpenCLIP compute-optimal frontier for imagenet1k_acc1 -- so the default
+#: (0.25, 0.75) rails both exponents at 0.25 and pins the derived compute-optimal
+#: exponent beta/(alpha+beta) at exactly 0.5 regardless of the data.
+ACCURACY_EXPONENT_BOUNDS = (0.01, 1.5)
+
+
+def _get_best_loss_guess(benchmark_name: str, loss_key: str = "objective_to_minimize") -> float:
+    """Upper bound on the irreducible term E, on the scale of the fitted target."""
+    if is_higher_better(loss_key):
+        target = target_from_loss_key(loss_key) or loss_key
+        return 1.0 - ACCURACY_CEILINGS.get(target, DEFAULT_ACCURACY_CEILING)
     return get_benchmark(benchmark_name, lc_aware=False, predictor_type=get_predictor_type(), lazy=True).best_loss_guess
+
+
+def _get_exponent_bounds(loss_key: str = "objective_to_minimize") -> tuple[float, float]:
+    """alpha/beta search range for Chinchilla3, widened for accuracy-like targets."""
+    if is_higher_better(loss_key):
+        return ACCURACY_EXPONENT_BOUNDS
+    return Chinchilla_Guided_Scaling.DEFAULT_EXPONENT_BOUNDS
 
 
 def _get_log_scale_upper_clip(values: list[np.ndarray], quantile: float | None) -> float | None:
@@ -227,6 +229,12 @@ def process_seed(
     if _fulldf.empty:
         raise ValueError(f"No trials found in {path}")
 
+    if loss_key not in _fulldf.columns:
+        raise KeyError(
+            f"'{loss_key}' not in the trial reports of {path}. Downstream targets have to be"
+            f" evaluated post-hoc first (python -m src.posthoc_downstream_eval --target ...)."
+        )
+
     _fulldf = _fulldf.sort_values("time_sampled")
 
     def get_cost(idx: str | int) -> float:
@@ -258,8 +266,10 @@ def process_seed(
             # Keep NaN/inf values as NaN for post-processing
             if np.isinf(loss):
                 loss = np.nan
-            # elif '_acc' in loss_key or 'recall' in loss_key:
-            #     loss = 1.0 - loss
+            else:
+                # Accuracy-like downstream targets are flipped here, once, so that
+                # everything below (Pareto fronts, fits, incumbents) keeps minimizing.
+                loss = to_minimizable(loss, loss_key)
         except (ValueError, TypeError): # Handle NaN, NA, and inf values
             loss = np.nan
         losses.append(loss)
@@ -565,6 +575,12 @@ def plot_optimizer_loss(
         # Otherwise, find the absolute earliest start point
         common_start = min(all_first_flops) if all_first_flops else 0.0
     
+    # Curves that run out of data early are held constant to the shared end point.
+    common_end = max(
+        (float(data['flop_counts'][-1]) for data in all_data if len(data['flop_counts']) > 0),
+        default=0.0,
+    )
+
     # Second pass: plot with common starting point
     x_lim_min = [0.0]
     x_lim_max = [1.0]
@@ -572,19 +588,23 @@ def plot_optimizer_loss(
         flop_counts = data['flop_counts']
         mean_losses = data['mean_losses']
         std_losses = data['std_losses']
-        
+
         # Trim data to common_start
         mask = flop_counts >= common_start - 1e-8
         flop_counts = flop_counts[mask]
         mean_losses = mean_losses[mask]
         std_losses = std_losses[mask]
-        
+
         # Ensure all lines start from common_start by prepending first value if needed
         if len(flop_counts) > 0 and flop_counts[0] > common_start + 1e-8:
             flop_counts = np.concatenate([[common_start], flop_counts])
             mean_losses = np.concatenate([[mean_losses[0]], mean_losses])
             std_losses = np.concatenate([[std_losses[0]], std_losses])
-        
+
+        flop_counts, (mean_losses, std_losses) = _extend_curve_to(
+            flop_counts, [mean_losses, std_losses], common_end
+        )
+
         if len(flop_counts) > 0:
             # Plot mean loss
             ax.plot(
@@ -1854,7 +1874,12 @@ def plot_hypervolume_over_flops(
     
     # Calculate common starting point (max of all first flops, excluding 0.0)
     common_start = max(all_first_flops) if all_first_flops else 0
-    
+    # Curves that run out of data early are held constant to the shared end point.
+    common_end = max(
+        (float(data['flop_counts'][-1]) for data in all_data if len(data['flop_counts']) > 0),
+        default=0.0,
+    )
+
     # Second pass: plot with common starting point
     x_series_for_limits: list[np.ndarray] = []
     for data in all_data:
@@ -1867,13 +1892,17 @@ def plot_hypervolume_over_flops(
         flop_counts = flop_counts[mask]
         mean_hvs = mean_hvs[mask]
         std_hvs = std_hvs[mask]
-        
+
         # Ensure all lines start from common_start by prepending first value if needed
         if len(flop_counts) > 0 and flop_counts[0] > common_start + 1e-8:
             flop_counts = np.concatenate([[common_start], flop_counts])
             mean_hvs = np.concatenate([[mean_hvs[0]], mean_hvs])
             std_hvs = np.concatenate([[std_hvs[0]], std_hvs])
-        
+
+        flop_counts, (mean_hvs, std_hvs) = _extend_curve_to(
+            flop_counts, [mean_hvs, std_hvs], common_end
+        )
+
         if len(flop_counts) > 0:
             x_series_for_limits.append(flop_counts)
             # Plot mean hypervolume
@@ -1989,6 +2018,11 @@ def plot_pareto_line_area_to_true_over_flops(
             all_first_flops.append(non_zero_flops[0])
 
     common_start = max(all_first_flops) if all_first_flops else 0.0
+    # Curves that run out of data early are held constant to the shared end point.
+    common_end = max(
+        (float(data["flop_counts"][-1]) for data in all_data if len(data["flop_counts"]) > 0),
+        default=0.0,
+    )
     x_series_for_limits: list[np.ndarray] = []
     y_values_for_view: list[np.ndarray] = []
     for data in all_data:
@@ -2002,6 +2036,10 @@ def plot_pareto_line_area_to_true_over_flops(
         std_areas = std_areas[mask]
         if len(flop_counts) == 0:
             continue
+
+        flop_counts, (mean_areas, std_areas) = _extend_curve_to(
+            flop_counts, [mean_areas, std_areas], common_end
+        )
 
         x_series_for_limits.append(flop_counts)
         finite_mean_areas = mean_areas[np.isfinite(mean_areas)]
@@ -3010,6 +3048,7 @@ if __name__ == '__main__':
                 (fig_loss_comp_without, axes_loss_comp_without),
             ),
             close_sources=True,
+            n_per_row= 1+ len(benchmarks)
         )
         fig_without_metrics_combined.savefig(
             plots_dir / "without_priors_metrics_composite.pdf",

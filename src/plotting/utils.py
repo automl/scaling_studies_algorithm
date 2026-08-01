@@ -29,6 +29,69 @@ OPTIMIZER_LABELS: dict[str, str] = {
 }
 
 
+LOSS_KEY_PREFIX = "extra.predictions."
+LOSS_KEY_SUFFIX = ".mean"
+
+
+def target_loss_key(target: Any) -> str:
+    """Column of `neps.status`'s dataframe holding the prediction for `target`.
+
+    Post-hoc downstream evaluation (src/posthoc_downstream_eval.py) stores each
+    extra target under `extra.predictions.<target>`, which json_normalize
+    flattens into this column.
+    """
+    return f"{LOSS_KEY_PREFIX}{getattr(target, 'value', target)}{LOSS_KEY_SUFFIX}"
+
+
+def target_from_loss_key(loss_key: str) -> str | None:
+    """Inverse of `target_loss_key`; None for the run's own objective."""
+    if loss_key.startswith(LOSS_KEY_PREFIX) and loss_key.endswith(LOSS_KEY_SUFFIX):
+        return loss_key[len(LOSS_KEY_PREFIX):-len(LOSS_KEY_SUFFIX)]
+    return None
+
+
+def is_higher_better(loss_key: str) -> bool:
+    """True for accuracy-like targets, which have to be flipped before fitting.
+
+    Everything downstream of `process_seed` -- Pareto fronts, power-law fits,
+    incumbents, log-scale axes -- assumes smaller is better, so accuracies are
+    converted to `1 - acc` on extraction (same rule as src/plotting/hp_scale.py).
+    """
+    target = target_from_loss_key(loss_key) or loss_key
+    return "_acc" in target or "recall" in target
+
+
+def to_minimizable(value: float, loss_key: str) -> float:
+    """Value in minimization form: `1 - v` for accuracy-like targets, else `v`."""
+    return 1.0 - value if is_higher_better(loss_key) else value
+
+
+def loss_key_slug(loss_key: str) -> str | None:
+    """Filesystem-safe name of the target, or None for the run's own objective."""
+    target = target_from_loss_key(loss_key)
+    if target is None:
+        return None
+    return re.sub(r"[^0-9A-Za-z._-]", "_", target)
+
+
+def prediction_cache_dir(
+    base_path: str | Path,
+    opt_name: str,
+    seed: Any,
+    loss_key: str = "objective_to_minimize",
+) -> Path:
+    """Cache directory for the scaling-law fits of one seed.
+
+    Cached fits are keyed only by (predictor, kind, n_trials), so a downstream
+    target -- which has the same trial count as the run's own objective -- would
+    silently reuse and overwrite the objective's fits. Its fits therefore live in
+    a per-target subdirectory.
+    """
+    cache_dir = Path(base_path) / opt_name / f"seed_{seed}" / "prediction_cache"
+    slug = loss_key_slug(loss_key)
+    return cache_dir if slug is None else cache_dir / slug
+
+
 def get_optimizer_color(opt_name: str) -> str:
     """Get color for optimizer, with fallback to default."""
     return OPTIMIZER_COLORS.get(opt_name, OPTIMIZER_COLORS["default"])
@@ -46,6 +109,18 @@ def get_optimizer_label(opt_name: str) -> str:
 
     label = opt_name.replace("_with_priors", " (with priors)").replace("_", " ").strip()
     return " ".join(token.upper() if token.lower() == "carbs" else token.capitalize() for token in label.split())
+
+
+def get_predictor_label(predictor_type: Any) -> str:
+    """Display label for a predictor used in plot legends/titles/tables.
+
+    Deliberately distinct from `predictor_type.value`, which is the on-disk slug
+    used for cache filenames and result directories.
+    """
+    label = getattr(predictor_type, "display_label", None)
+    if label:
+        return str(label)
+    return str(getattr(predictor_type, "value", None) or predictor_type)
 
 
 def _split_optimizers_by_priors(
@@ -131,6 +206,32 @@ def _get_hypervolume_bounds(
     loss_bounds = (min(all_losses), max(all_losses)) if all_losses else None
     flops_bounds = (min(all_log_costs), max(all_log_costs)) if all_log_costs else None
     return loss_bounds, flops_bounds
+
+
+def _extend_curve_to(
+    x: np.ndarray,
+    ys: list[np.ndarray],
+    end: float,
+) -> tuple[np.ndarray, list[np.ndarray]]:
+    """Hold a curve constant at its last finite value out to ``end``.
+
+    Curves that already reach ``end`` (or that have no finite value) are returned
+    unchanged.
+    """
+    x = np.asarray(x, dtype=float)
+    ys = [np.asarray(y, dtype=float) for y in ys]
+    if len(x) == 0 or x[-1] >= end - 1e-8:
+        return x, ys
+
+    last_finite = [np.flatnonzero(np.isfinite(y)) for y in ys]
+    if any(len(idx) == 0 for idx in last_finite):
+        return x, ys
+
+    extended_x = np.concatenate([x, [end]])
+    extended_ys = [
+        np.concatenate([y, [y[idx[-1]]]]) for y, idx in zip(ys, last_finite)
+    ]
+    return extended_x, extended_ys
 
 
 def _get_common_xlim(
@@ -439,18 +540,25 @@ def merge_split_composite_plots(
             plt.close(source_fig)
 
     clean_handles, clean_labels = _dedupe_legend(shared_handles, shared_labels)
+
+    # Lay out the axes first so the legend offset is measured against the final
+    # figure geometry.
+    master_fig.tight_layout()
+
     if clean_handles:
+        # Keep the gap between the axes and the legend constant in inches: a
+        # figure-fraction offset would grow with the number of rows.
+        legend_gap_inches = 0.25
         master_fig.legend(
             clean_handles,
             clean_labels,
-            loc="lower center",
-            bbox_to_anchor=(0.5, -0.15),
+            loc="upper center",
+            bbox_to_anchor=(0.5, -legend_gap_inches / master_fig.get_figheight()),
             ncol=min(4, len(clean_labels)),
             fontsize=20,
             frameon=True,
         )
 
-    plt.tight_layout(rect=[0, 0.1, 1, 1])
     return master_fig, master_axes
 
 
@@ -631,15 +739,17 @@ def merge_pareto_plots(benchmark_dict):
             clean_handles.append(h)
             clean_labels.append(l)
 
-    # Apply the single legend to the bottom of the master figure
-    if clean_handles:
-        master_fig.legend(clean_handles, clean_labels, loc='lower center',
-                          bbox_to_anchor=(0.5, -0.2),
-                          ncol=min(4, len(clean_labels)), fontsize=15, frameon=True)
-
     # --- Adjust Layout ---
-    plt.tight_layout()
-    # Add padding to the bottom so the axes don't sit on top of the legend
-    master_fig.subplots_adjust(bottom=0.2)
+    # Lay out the axes first so the legend offset is measured against the final
+    # figure geometry.
+    master_fig.tight_layout()
+
+    # Apply the single legend just below the master figure. The offset is
+    # derived from a fixed inch gap so it does not grow with the figure height.
+    if clean_handles:
+        legend_gap_inches = 0.25
+        master_fig.legend(clean_handles, clean_labels, loc='upper center',
+                          bbox_to_anchor=(0.5, -legend_gap_inches / master_fig.get_figheight()),
+                          ncol=min(4, len(clean_labels)), fontsize=15, frameon=True)
 
     return master_fig, master_axes

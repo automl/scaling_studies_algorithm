@@ -51,8 +51,9 @@ if __name__ == "__main__":
     from src.plotting.prediction_plots import warm_prediction_cache
     from src.benchmarks.configs import get_results_dir, BenchmarkEnum
 
+    from src.plotting.consts import loss_key  # honours SCAN_TARGET, like the plots do
+
     results_dir = get_results_dir(predictor_type)
-    loss_key = "objective_to_minimize"
     all_seeds = list(set(range(40, 48)))
     optimizers_dict = {
         "random_search": all_seeds,

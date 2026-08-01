@@ -1,9 +1,20 @@
+import os
+
 from src.benchmarks.configs import get_benchmark, get_predictor_type, get_results_dir, BenchmarkEnum
 from src.extrapolate import load_or_generate_pareto_info
+from src.plotting.utils import target_loss_key
 from neps.space.neps_spaces.neps_space import convert_neps_to_classic_search_space
 from pathlib import Path
 
 predictor_type = get_predictor_type()
+
+# Downstream target to plot instead of each run's own objective, selected the same
+# way as the predictor (env var, so every module building constants at import time
+# agrees). Unset -> the objective the study actually optimized (upstream loss).
+# The target must have been written into the reports first, by
+# `python -m src.posthoc_downstream_eval --target <target> ...`.
+TARGET_ENV_VAR = "SCAN_TARGET"
+target = os.environ.get(TARGET_ENV_VAR) or None
 
 acc_flop_ranges_per_benchmark = {
     BenchmarkEnum.OPENCLIP.value: (4e16, get_benchmark(BenchmarkEnum.OPENCLIP.value, False, predictor_type=predictor_type, lazy=True).max_evaluation_flops * 0.9),
@@ -22,8 +33,8 @@ acc_pred_flop_ranges_per_benchmark = {
 }
 
 selected_best_seed_per_benchmark = {
-    BenchmarkEnum.OPENCLIP.value: 49,
-    BenchmarkEnum.LLM.value: 44,
+    BenchmarkEnum.OPENCLIP.value: 48,
+    BenchmarkEnum.LLM.value: 47,
     BenchmarkEnum.TABPFN.value: 47,
 }
 
@@ -67,8 +78,8 @@ acc_pred_flop_ranges_per_benchmark_by_ratio = {
     if benchmark_name in acc_pred_flop_ranges_per_benchmark
 }
 true_pareto_info_per_benchmark = {
-    BenchmarkEnum.OPENCLIP.value: load_or_generate_pareto_info(BenchmarkEnum.OPENCLIP.value),
-    BenchmarkEnum.LLM.value: load_or_generate_pareto_info(BenchmarkEnum.LLM.value),
+    BenchmarkEnum.OPENCLIP.value: load_or_generate_pareto_info(BenchmarkEnum.OPENCLIP.value, target=target),
+    BenchmarkEnum.LLM.value: load_or_generate_pareto_info(BenchmarkEnum.LLM.value, target=target),
     # BenchmarkEnum.TABPFN.value: load_or_generate_pareto_info(BenchmarkEnum.TABPFN.value),
 }
 
@@ -81,14 +92,14 @@ bench_confs = {
     # look diverged. TABPFN stays lazy=True: eagerly constructing it currently
     # crashes (installed scan_benchmark.tabpfn.api is missing an `import os`),
     # and table.py's benchmark loop excludes TABPFN anyway.
-    BenchmarkEnum.OPENCLIP.value: get_benchmark(BenchmarkEnum.OPENCLIP.value, False, predictor_type=predictor_type, lazy=False),
-    BenchmarkEnum.LLM.value: get_benchmark(BenchmarkEnum.LLM.value, False, predictor_type=predictor_type, lazy=False),
+    BenchmarkEnum.OPENCLIP.value: get_benchmark(BenchmarkEnum.OPENCLIP.value, False, predictor_type=predictor_type, lazy=True),
+    BenchmarkEnum.LLM.value: get_benchmark(BenchmarkEnum.LLM.value, False, predictor_type=predictor_type, lazy=True),
     BenchmarkEnum.TABPFN.value: get_benchmark(BenchmarkEnum.TABPFN.value, False, predictor_type=predictor_type, lazy=True),
 }
 
 results_dir = get_results_dir(predictor_type)
 # results_dir = Path("/work/dlc2workfs2/alipourn-scan/test")
-loss_key = "objective_to_minimize"
+loss_key = "objective_to_minimize" if target is None else target_loss_key(target)
 
 
 all_seeds = list(set(range(40, 50)))

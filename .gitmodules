@@ -1,3 +1,4 @@
-[submodule "/home/alipourn/scaling_studies_algorithm/neps"]
-	path = /home/alipourn/scaling_studies_algorithm/neps
+[submodule "subs"]
+	path = subs
 	url = https://github.com/automl/neps
+	branch = scaling-neps

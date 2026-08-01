@@ -7,7 +7,10 @@ import pandas as pd
 from neps.state.trial import State
 from src.benchmarks.llm_space import LLM_TARGETS
 from src.benchmarks.openclip_space import OPENCLIP_TARGETS
-from src.benchmarks.configs import BenchmarkEnum, get_results_dir
+from src.benchmarks.configs import RESULTS_BASE_DIR, BenchmarkEnum
+
+# The only remaining consumer of the dense grid studies; kept for HP-vs-scale plots.
+GRID_STUDY_BASE_DIR = RESULTS_BASE_DIR / "test"
 
 TABPFN_CSV_COLUMN_RENAME = {
     "config/effective_batch_size": "config.effective_batch_size",
@@ -384,8 +387,8 @@ if __name__ == "__main__":
                 run_hp_scale_analysis(bench_name, ["val_loss"], save_dir, losses, costs, confs, params, datapoints)
     else:
         pathes = {
-            BenchmarkEnum.OPENCLIP: get_results_dir() / "openclip" / "grid_search",
-            BenchmarkEnum.LLM: get_results_dir() / "llm" / "grid_search",
+            BenchmarkEnum.OPENCLIP: GRID_STUDY_BASE_DIR / "openclip" / "grid_search",
+            BenchmarkEnum.LLM: GRID_STUDY_BASE_DIR / "llm" / "grid_search",
         }
         from dep.scan_bench_suite.scan_benchmark.llm.api import LLMTarget
         from dep.scan_bench_suite.scan_benchmark.vlm.api import VLMTarget

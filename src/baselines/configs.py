@@ -3,7 +3,7 @@ from collections.abc import Callable
 from typing import Any
 
 
-from neps.optimizers.algorithms import bo_guided_scaling, random_search, grid_search
+from neps.optimizers.algorithms import bo_guided_scaling, random_search
 from neps.optimizers.optimizer import AskFunction
 from neps.optimizers.algorithms import custom, CustomOptimizer
 
@@ -25,7 +25,6 @@ class OptimizerEnum(StrEnum):
     CHINCHILLA_GEMSTONES = "chinchilla_gemstones"
     RANDOM_SEARCH = "random_search"
     CARBS = "carbs"
-    GRID_SEARCH = "grid_search"
 
 def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, seen_datapoints_estimator, flops_estimator, aspect_ratio_fn, data_parameter_name, benchmark_type, size_per_numerical_dimension=10):
     def get_optimizer(optimizer_name: OptimizerEnum, root_dir, max_evaluation_flops, max_flops, seed = 1, use_priors = False) -> tuple[Callable[..., Any] | CustomOptimizer, dict[str, Any]]:
@@ -145,13 +144,6 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     root_dir=root_dir,
                     )
                 return optimizer, kwargs | {"evaluate_pipeline": evaluate_pipeline_wrapper(carbs_opt, evaluate_pipeline, flops_estimator, max_flops)}
-            case OptimizerEnum.GRID_SEARCH:
-                return lambda space: random_search( # changed to random search with no limit on budget
-                    space,
-                    use_priors=use_priors,
-                    ignore_fidelity=False,
-                    constraints_func= lambda conf: flops_estimator(**conf) - 1e17
-                ), kwargs
             case _:
                 raise ValueError(f"Unknown optimizer: {optimizer_name}")
     return get_optimizer

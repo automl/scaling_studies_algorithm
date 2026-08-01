@@ -254,15 +254,11 @@ if __name__ == "__main__":
             
             benchmark = get_benchmark(benchmark_name, False, predictor_type=get_predictor_type())
             
-            # Load pareto info
-            comprehensive_study_root_dir = results_dir / benchmark_name / OptimizerEnum.GRID_SEARCH.value / "seed_40"
-            summary_dir = Path(comprehensive_study_root_dir) / "summary"
-            from src.extrapolate import load_pareto_info, get_true_pareto_front
-            
-            pareto_info = load_pareto_info(summary_dir)
-            if pareto_info is None:
-                pareto_info = get_true_pareto_front(comprehensive_study_root_dir)
-            
+            # Empirical reference front, from the benchmark's measured runs.
+            from src.extrapolate import load_or_generate_pareto_info
+
+            pareto_info = load_or_generate_pareto_info(benchmark_name)
+
             # Build optimizer_asks dictionary
             from src.baselines.configs import get_optimizer_wrapper, OptimizerEnum
             optimizer_asks = {}

@@ -7,50 +7,156 @@ compared systematically. Baselines covered: **Chinchilla approach 1**, **Chinchi
 
 ## Install
 
-```bash
-conda create -n scaling python=3.11
-conda activate scaling
+Requires Python 3.11 and git. The install is CPU-only — nothing in the pipeline needs a GPU, the
+"training" is a surrogate lookup.
 
-# local packages (surrogate benchmarks, neps fork, carbs)
+```bash
+conda create -n scaling python=3.11 -y
+conda activate scaling
+pip install --upgrade pip build
+
+git clone <SCAN_ANALYSIS_REPO_HERE>
+cd scaling_studies_algorithm
+
+git submodule update --init
+
+mkdir -p dep
+git clone https://github.com/imbue-ai/carbs dep/carbs
+git clone <SCAN_BENCH_SUITE_REPO_HERE> dep/scan_bench_suite
+
+pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+
 pip install ./subs ./dep/carbs
-cd $PASS_TO_SCAN_BENCH_SUITE_HERE && python -m build --wheel && pip install dist/scan_benchmark-0.1.0-py3-none-any.whl
+
+(cd dep/scan_bench_suite && python -m build --wheel)
+pip install --no-deps dep/scan_bench_suite/dist/scan_benchmark-0.1.2-py3-none-any.whl
+
+# scan_benchmark's dependencies, supplied explicitly because of --no-deps above
+pip install \
+    xgboost==3.1.3 \
+    scikit-learn==1.7.2 \
+    tabpfn==6.4.1 \
+    matplotlib \
+    seaborn \
+    tqdm \
+    lightgbm==4.6.0 \
+    "autogluon.tabular==1.5.0"
 ```
 
-(See [Dockerfile](Dockerfile) for a containerized, CPU-only version of the same install.)
+(See [Dockerfile](Dockerfile) for a containerized version of the same install.)
+
+## Configuration
+
+All entrypoints are configured through environment variables — nothing needs editing in the source to
+run this somewhere else:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SCAN_RESULT_DIR` | `/work/dlc2workfs2/alipourn-scan` (`RESULTS_BASE_DIR` in [src/benchmarks/configs.py](src/benchmarks/configs.py)) | Root for run directories, predictor caches and plots. Runs are stored under `$SCAN_RESULT_DIR/<pred>/<benchmark>/<optimizer>/seed_<n>/`. |
+| `SCAN_PREDICTOR_TYPE` | `tabpfn` | Surrogate's internal performance predictor. Set by `--pred` on the entrypoints; only needed directly for the plotting scripts, which take no `--pred` flag. |
+| `SCAN_TARGET` | unset (each study's own objective) | Plot/cache a post-hoc downstream target instead, e.g. `imagenet1k_acc1`. Requires step 3 below to have run. |
+| `CONDA_ENV` | `scaling` | Which conda env `scripts/*.sh` activate (see [scripts/_common.sh](scripts/_common.sh)). |
+
+To set `SCAN_RESULT_DIR` explicitly:
+
+```bash
+export SCAN_RESULT_DIR=/my/scratch/scan
+```
+
+The examples below spell it out inline instead, to make the dependency obvious.
 
 ## Workflow
 
-1. **Data acquisition** — run an optimizer against a benchmark surrogate, logging every
-   trial (config, loss, FLOPs) to a `neps` run directory:
+The four steps are strictly ordered: plots and tables read the predictor cache, the cache reads the run
+directories, and the run directories are written by acquisition. Each step is shown twice — a single
+combination you can run locally to check your install, and the Slurm array that fans it out over the
+full grid.
 
-   ```bash
-   python -m src.run --benchmark llm --optimizer chinchilla_approach1 --pred tabpfn --seed 40
-   ```
+### 1. Data acquisition
 
-   `--optimizer` selects the baseline (`chinchilla_approach1`, `chinchilla_approach2`, `random_search`,
-   `carbs`, ...), `--benchmark` selects the surrogate task, `--pred` selects the surrogate's internal
-   performance predictor (e.g. `tabpfn`, `ensemble_xgb`). Omit `--optimizer` to run the default baseline
-   set back to back.
+Run an optimizer against a benchmark surrogate, logging every trial (config, loss, FLOPs) to a `neps`
+run directory:
 
-2. **Metrics-over-acquisition plots** — visualize how loss/regret evolves as each optimizer spends its
-   FLOPs budget:
+```bash
+SCAN_RESULT_DIR=/my/scratch/scan \
+    python -m src.run --benchmark llm --optimizer random_search --pred tabpfn --seed 40
+```
 
-   ```bash
-   python -m src.plotting.standalone_plots
-   ```
+`--benchmark` selects the surrogate task (`llm`, `openclip`, `tabpfn`), `--optimizer` the baseline
+(`chinchilla_approach1`, `chinchilla_approach2`, `random_search`, `carbs`, ...), `--pred` the
+surrogate's internal performance predictor (`tabpfn`, `ensemble_xgb`, `ensemble_lightgbm`,
+`ensemble_mix`). One combination takes a few minutes on CPU.
 
-   (`scripts/run_all_standalone.sh` sweeps this over all surrogate predictor types.)
+Full grid — **both** benchmarks × N optimizers × M seeds × K predictor = 2 * M * N * K array tasks, one per
+`SLURM_ARRAY_TASK_ID`:
 
-3. **Scaling-law prediction plots and tables** — fit scaling laws on the acquired data and plot/tabulate
-   how well each baseline extrapolates to unseen compute budgets:
+```bash
+mkdir -p logs                     # sbatch --output writes here
+sbatch --partition=<your_cpu_partition> \
+       --export=ALL,SCAN_RESULT_DIR=/my/scratch/scan \
+       scripts/eval_with_seeds_array.sh
+```
 
-   ```bash
-   python -m src.plotting.prediction_plots
-   python -m src.plotting.table
-   ```
+### 2. Warm the predictor cache
 
-   (`scripts/run_all_predictions.sh` and `scripts/run_all_table.sh` sweep these over all surrogate
-   predictor types.)
+The three scaling-law predictors are refit at every intermediate trial count, which is far too slow to
+do inline in the plotting scripts. [src/plotting/pred_cache_gen.py](src/plotting/pred_cache_gen.py)
+walks a run directory and fits (and caches) all of them up front:
+
+```bash
+SCAN_RESULT_DIR=/my/scratch/scan \
+    python -m src.plotting.pred_cache_gen --benchmark llm --optimizer random_search --seed 40 --pred tabpfn
+```
+
+Same task grid as step 1:
+
+```bash
+sbatch --partition=<your_partition> \
+       --export=ALL,SCAN_RESULT_DIR=/my/scratch/scan \
+       scripts/gen_pred_cache_array.sh
+```
+
+Add `OVERRIDE=1` to the `--export` list to refit and overwrite instead of reusing what is cached.
+
+### 3. Post-hoc downstream evaluation (optional, openclip only)
+
+Re-queries the configs already stored in step 1 with a surrogate bound to a downstream target
+(e.g. ImageNet top-1 instead of the training objective) and records it under
+`extra.predictions.<target>` in each `report.yaml`:
+
+```bash
+sbatch --partition=<your_partition> \
+       --export=ALL,SCAN_RESULT_DIR=/my/scratch/scan \
+       scripts/down_eval_with_seeds_array.sh
+```
+
+Only needed if you want to pass `SCAN_TARGET=imagenet1k_acc1` to the plotting steps below.
+
+### 4. Plots and tables
+
+Metrics over acquisition — how loss/regret evolves as each optimizer spends its FLOPs budget:
+
+```bash
+SCAN_RESULT_DIR=/my/scratch/scan python -m src.plotting.standalone_plots
+```
+
+Scaling-law prediction plots and tables — how well each baseline extrapolates to unseen target compute
+budgets:
+
+```bash
+SCAN_RESULT_DIR=/my/scratch/scan python -m src.plotting.prediction_plots
+SCAN_RESULT_DIR=/my/scratch/scan python -m src.plotting.table
+```
+
+These aggregate over the whole grid rather than one run, so they take no `--benchmark`/`--seed` flags —
+they read every optimizer × seed listed in [src/plotting/consts.py](src/plotting/consts.py).
+
+`scripts/run_all_standalone.sh`, `scripts/run_all_predictions.sh` and `scripts/run_all_table.sh` sweep
+these over all four surrogate predictor types:
+
+```bash
+SCAN_RESULT_DIR=/my/scratch/scan CONDA_ENV=scaling scripts/run_all_predictions.sh
+```
 
 ## Acquisition baselines
 
@@ -81,43 +187,24 @@ Once trials are acquired, three predictors extrapolate different quantities to u
 
 All three predictors are expensive to fit (they refit on every trial count seen during a run), so each one
 routes its fit results through **[src/predictor_cache.py](src/predictor_cache.py)**, a small
-`.npz`-backed cache. On a cache hit the fit is loaded instead of
-recomputed; on a miss it's fit once and saved.
-
-**[src/plotting/pred_cache_gen.py](src/plotting/pred_cache_gen.py)** is the script that *warms* this
-cache: for a given `--optimizer`/`--benchmark`/`--seed`/`--pred` combination it walks the run directory and
-fits (and caches) the HP/loss/scale-param predictors at every intermediate trial count, so that later
-plotting/table scripts (`prediction_plots.py`, `table.py`) just read the cache instead of refitting.
-
-Run it directly:
-
-```bash
-python -m src.plotting.pred_cache_gen --optimizer chinchilla_approach1 --benchmark openclip --seed 40 --pred tabpfn
-```
-
-or fan it out over the full grid of optimizers × seeds × predictor types with the Slurm array script
-**[scripts/gen_pred_cache_array.sh](scripts/gen_pred_cache_array.sh)**, which maps each
-`SLURM_ARRAY_TASK_ID` to one `(optimizer, seed, pred)` combination and calls `pred_cache_gen` for it:
-
-```bash
-sbatch scripts/gen_pred_cache_array.sh
-```
+`.npz`-backed cache. On a cache hit the fit is loaded instead of recomputed; on a miss it's fit once and
+saved. Step 2 of the workflow above is what populates it.
 
 ## Reproducibility
 
-**Seeds.** Headline plots/tables aggregate over **11 seeds (40–50)**, the set defined in
-[`src/plotting/consts.py`](src/plotting/consts.py) (`all_seeds = range(40, 50)`) — this is the canonical
-seed list. Aggregation is a real statistical step: `standalone_plots.py`,
-`prediction_plots.py`, and `table.py` all compute per-seed arrays including over
-derived quantities like optimizer rank and Pareto-front hypervolume, not just raw loss.
-
+**Seeds.** The canonical seed list is defined in [`src/plotting/consts.py`](src/plotting/consts.py)
+(`all_seeds = range(40, 50)`, i.e. **10 seeds, 40–49**). Note that the acquisition and cache scripts run
+seeds 40–50 (11 seeds), so seed 50 is acquired but not aggregated — widen `all_seeds` to `range(40, 51)`
+if you want it included. Aggregation is a real statistical step: `standalone_plots.py`,
+`prediction_plots.py`, and `table.py` all compute per-seed arrays including over derived quantities like
+optimizer rank and Pareto-front hypervolume, not just raw loss.
 
 **Predictor-type ablation.** `--pred {tabpfn, ensemble_xgb, ensemble_lightgbm, ensemble_mix}` swaps the
 *surrogate benchmark's* internal performance-prediction model (the thing that stands in for actually
 training a model at a given config). This is a robustness axis: rerunning the full
 optimizer comparison under all four surrogates (`run_all_predictions.sh`, `run_all_standalone.sh`,
-`run_all_table.sh`) checks that baseline rankings aren't an artifact of one surrogate's biases. Preempting the question of "are these
-conclusions surrogate-specific?
+`run_all_table.sh`) checks that baseline rankings aren't an artifact of one surrogate's biases,
+preempting the question of "are these conclusions surrogate-specific?".
 
 **Compute budget.** Each benchmark's total optimizer-visible FLOPs budget (`max_evaluation_flops`) and
 target range (`min_flops`/`max_flops`) are fixed per benchmark in

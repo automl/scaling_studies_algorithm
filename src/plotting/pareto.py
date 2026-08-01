@@ -171,11 +171,9 @@ def plot_aspect_ratio_vs_loss(aspect_ratios, losses, save_dir: Path = None):
 
 
 if __name__ == "__main__":
-    # path = Path("scripts/results/openclip_grid_search/grid_search/seed_40")
     bench = BenchmarkEnum.OPENCLIP
     pathes = {
         BenchmarkEnum.OPENCLIP: get_results_dir() / "openclip" / "carbs",
-        # BenchmarkEnum.LLM: get_results_dir() / "llm" / "grid_search"
     }
     path = pathes[bench]
     targets = ["val_loss"]

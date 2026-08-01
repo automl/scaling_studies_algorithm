@@ -2,7 +2,7 @@ from src.plotting.prediction_plots import (
     _extract_result_value,
     _format_hp_table_value,
 )
-from src.plotting.standalone_plots import process_seed
+from src.plotting.standalone_plots import process_seed, _get_best_loss_guess, _get_exponent_bounds
 from pathlib import Path
 from typing import Any, cast, Callable
 import json
@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 from src.plotting.utils import OPTIMIZER_LABELS, get_optimizer_label, _split_optimizers_by_priors, \
-    _placeholder_plot
+    _placeholder_plot, get_predictor_label, prediction_cache_dir
 
 
 def _json_safe(value: Any) -> Any:
@@ -116,11 +116,13 @@ def plot_predictor_optimizer_summary_table(
     base_path = Path(base_path)
     opt_names = list(optimizers.keys())
     opt_labels = [get_optimizer_label(opt) for opt in opt_names]
-    pred_labels = [p.value if hasattr(p, "value") else str(p) for p in predictor_types]
+    pred_labels = [get_predictor_label(p) for p in predictor_types]
 
     cell_text = []
 
-    best_loss_guess = get_benchmark(base_path.name, lc_aware=False, predictor_type=get_predictor_type()).best_loss_guess
+    best_loss_guess = _get_best_loss_guess(base_path.name, loss_key)
+
+    exponent_bounds = _get_exponent_bounds(loss_key)
     # Iterate through Optimizers first to create Rows
     for opt_name, _seeds in optimizers.items():
         row_values = []
@@ -148,12 +150,13 @@ def plot_predictor_optimizer_summary_table(
 
                 try:
                     source = lc_rows[:n_trials] if len(lc_rows) > 0 else rows[:n_trials]
-                    cache_dir = base_path / opt_name / f"seed_{seed}" / "prediction_cache"
+                    cache_dir = prediction_cache_dir(base_path, opt_name, seed, loss_key)
                     (pred_n, _), _ = predict_scale_parameters(
                         predictor_type=p_type,
                         target_flop=target_flop,
                         rows=source,
                         best_loss_guess=best_loss_guess,
+                        exponent_bounds=exponent_bounds,
                         cache_dir=cache_dir,
                     )
                     row_values.append(_format_hp_table_value(pred_n))
@@ -226,7 +229,7 @@ def plot_predicted_hp_table_over_flops(
     figsize: tuple[int, int] = (6, 4),
     title: str = "Predicted Hyperparameters at Target FLOPs",
     return_split: bool = True,
-    target_flop_ratios: tuple[float, ...] = (0.5, 1.0, 5.0),
+    target_flop_ratios: tuple[float, ...] = (0.05, 0.1, 0.5),
     flop_ranges_by_ratio: dict[float, tuple[float, float]] | None = None,
     selected_seed: int | str | None = None,
     result_subdir: str | None = None,
@@ -462,7 +465,7 @@ def plot_predicted_hp_table_over_flops(
                 actual_flops = np.diff(ratio_cumsum_arr, prepend=previous_cumsum).tolist()
                 try:
                     _is_gp = (predictor_type == HPPredictorTypes.GP_POSTERIOR)
-                    cache_dir = base_path / opt_name / f"seed_{seed}" / "prediction_cache"
+                    cache_dir = prediction_cache_dir(base_path, opt_name, seed, loss_key)
                     if _is_gp:
                         # GP uses all trials from the start up to the cutoff so the
                         # model sees the full history, not just the windowed slice.
@@ -478,7 +481,11 @@ def plot_predicted_hp_table_over_flops(
                     pred_result = predict_hp_from_scaling_law(
                         space=space,
                         hp_predictor_type=predictor_type,
-                        target_flops=ratio_target_flop,
+                        # The ratio only bounds the observed history (cutoff_upper
+                        # above); the extrapolation target is always the full
+                        # target_flop, so ratios measure how little data is needed
+                        # to predict the same config.
+                        target_flops=float(target_flop),
                         configs=call_configs,
                         losses=call_losses,
                         flops=call_flops,
@@ -504,7 +511,8 @@ def plot_predicted_hp_table_over_flops(
                             "seed": seed,
                             "config": predicted_cfg,
                             "loss": actual_loss,
-                            "target_flops": ratio_target_flop,
+                            "target_flops": float(target_flop),
+                            "history_flop_cutoff": ratio_target_flop,
                             "estimated_config_flops": estimated_cfg_flops,
                             "predicted_loss": pred_result.get("predicted_loss"),
                             "n_history_points": len(call_configs),
@@ -563,7 +571,7 @@ def plot_predicted_hp_table_from_json(
     json_path: str | Path,
     figsize: tuple[float, float] = (6.0, 4.0),
     title: str = "",
-    ratio_order: tuple[float, ...] = (0.5, 1.0, 5.0),
+    ratio_order: tuple[float, ...] = (0.05, 0.1, 0.5),
     out_json: str | Path | None = None,
 ) -> tuple[Any, Any]:
     """Read newline-delimited JSON at `json_path` and render a table.
@@ -613,7 +621,9 @@ def plot_predicted_hp_table_from_json(
     if not by_bench and not true_pareto_by_bench:
         raise ValueError("No valid records found in JSON file")
 
-    ordered_ratios = [float(r) for r in ratio_order]
+    # `ratio_order` only fixes display order -- ratios absent from the records
+    # must not become all-nan columns in the rendered table.
+    ordered_ratios = [float(r) for r in ratio_order if float(r) in ratios_seen]
     ratios = ordered_ratios + sorted(r for r in ratios_seen if r not in ordered_ratios)
     optimizers = optimizers_seen
     bench_names = sorted(set(by_bench.keys()) | set(true_pareto_by_bench.keys()))
@@ -762,6 +772,15 @@ if __name__ == "__main__":
         BenchmarkEnum.LLM.value,
         BenchmarkEnum.OPENCLIP.value,
     ]
+    # prediction_result.json is opened in append mode by every writer below, and it
+    # is shared across benchmarks, so a re-run would otherwise keep records from
+    # previous runs (including ratios no longer in hp_target_flop_ratios).
+    for multiplier in target_flop_multipliers:
+        stale = results_dir / "plots" / f"{multiplier}x" / "prediction_result.json"
+        if stale.exists():
+            stale.unlink()
+            print(f"Removed stale {stale}")
+
     for benchmark_name in benchmarks:
         print(f"\n{'='*60}")
         print(f"Generating plots for: {benchmark_name}")
@@ -788,7 +807,7 @@ if __name__ == "__main__":
                 # HPPredictorTypes.GP_POSTERIOR,
             ]:
                 hp_predictor_slug = hp_predictor_type.value.lower().replace(" ", "_")
-                print(f"  Building {hp_predictor_type.value} predicted HP table at FLOP: {target_flop:.2e}...")
+                print(f"  Building {get_predictor_label(hp_predictor_type)} predicted HP table at FLOP: {target_flop:.2e}...")
                 fig_hp_all, _ = cast(tuple[Any, Any], plot_predicted_hp_table_over_flops(
                     base_path=results_dir / benchmark_name,
                     optimizers=optimizers_dict,
@@ -801,7 +820,7 @@ if __name__ == "__main__":
                     predictor_type=hp_predictor_type,
                     key_to_extract="cost",
                     loss_key=loss_key,
-                    title=f"{BENCHMARK_TITLES[benchmark_name]} ({hp_predictor_type.value})",
+                    title=f"{BENCHMARK_TITLES[benchmark_name]} ({get_predictor_label(hp_predictor_type)})",
                     return_split=False,
                     target_flop_ratios=hp_target_flop_ratios,
                     flop_ranges_by_ratio=acc_pred_flop_ranges_per_benchmark_by_ratio[benchmark_name][target_flop],

@@ -11,14 +11,18 @@ from src.scaling_law_fit import LogLogPowerLawFit, fit_power_law, predict_from_l
 import src.predictor_cache as predictor_cache
 
 class ScaleParamPredictorTypes(Enum):
-    def __new__(cls, label: str, color: str):
+    """`value` is the on-disk slug (cache filenames, result dirs) -- never change
+    it. `display_label` is what shows up in figures and can be renamed freely."""
+
+    def __new__(cls, label: str, color: str, display_label: str | None = None):
         obj = object.__new__(cls)
         obj._value_ = label
         obj.color = color
+        obj.display_label = display_label if display_label is not None else label
         return obj
 
-    POWER_LAW_FIT = ("Direct $N$", "#1f77b4")
-    CHINCHILLA3 = ("Derived $N$", "#ff7f0e")
+    POWER_LAW_FIT = ("Direct $N$", "#1f77b4", "Power Law fit")
+    CHINCHILLA3 = ("Derived $N$", "#ff7f0e", "Chinchilla3")
     GP_POSTERIOR = ("GP Posterior", "#2ca02c")
 
 @dataclass
@@ -239,6 +243,7 @@ def _fit_scale_param(
     *,
     rows: list[tuple[float, float, float, float]] | list[list[tuple[float, float, float, float]]],
     best_loss_guess: float,
+    exponent_bounds: tuple[float, float] | None = None,
     space: Any = None,
     configs: list[dict] | None = None,
     cost_estimator: Any = None,
@@ -313,6 +318,7 @@ def _fit_scale_param(
             D=n_tokens,
             L=losses,
             best_loss_guess=best_loss_guess,
+            exponent_bounds=exponent_bounds,
         )
         return ScaleParamFit(predictor_type=predictor_type, chinchilla_params=scaling_params)
 
@@ -459,6 +465,7 @@ def get_scale_param_fit_trajectory(
     *,
     rows: list[tuple[float, float, float, float]] | list[list[tuple[float, float, float, float]]],
     best_loss_guess: float,
+    exponent_bounds: tuple[float, float],
     space: Any = None,
     configs: list[dict] | None = None,
     cost_estimator: Any = None,
@@ -486,6 +493,7 @@ def get_scale_param_fit_trajectory(
                     predictor_type,
                     rows=rows[:n],
                     best_loss_guess=best_loss_guess,
+                    exponent_bounds=exponent_bounds,
                     space=space,
                     configs=configs,
                     cost_estimator=cost_estimator,
@@ -515,7 +523,12 @@ def get_scale_param_fit_trajectory(
     params_rows: list[list[float]] = []
     for n in range(1, n_trials + 1):
         try:
-            fit = _fit_scale_param(predictor_type, rows=rows[:n], best_loss_guess=best_loss_guess)
+            fit = _fit_scale_param(
+                predictor_type,
+                rows=rows[:n],
+                best_loss_guess=best_loss_guess,
+                exponent_bounds=exponent_bounds,
+            )
         except Exception:
             # Too few points to fit at this trial-prefix (e.g. n=1); leave a
             # failed-fit sentinel so `.predict()` yields NaN, not a hard error.
@@ -535,6 +548,7 @@ def predict_scale_parameters(
     *,
     rows: list[tuple[float, float, float, float]] | list[list[tuple[float, float, float, float]]],
     best_loss_guess: float,
+    exponent_bounds: tuple[float, float],
     space: Any = None,
     configs: list[dict] | None = None,
     cost_estimator: Any = None,
@@ -546,6 +560,7 @@ def predict_scale_parameters(
         predictor_type,
         rows=rows,
         best_loss_guess=best_loss_guess,
+        exponent_bounds=exponent_bounds,
         space=space,
         configs=configs,
         cost_estimator=cost_estimator,
