@@ -22,7 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from neps.state.trial import State
 
-from src.benchmarks.configs import get_benchmark, get_predictor_type
+from src.benchmarks.configs import BenchmarkEnum, get_benchmark, get_predictor_type
 from src.baselines.chinchilla_guided_scaling import Chinchilla_Guided_Scaling
 from src.scaling_law_fit import fit_power_law, predict_from_loglog_fit
 from src.plotting.plot_styles import BENCHMARK_TITLES
@@ -146,6 +146,13 @@ def _get_log_scale_upper_clip(values: list[np.ndarray], quantile: float | None) 
         return None
 
     return float(10 ** np.nanquantile(np.log10(all_values), quantile))
+
+
+#: PER y-axis cap quantile per benchmark (default 0.99). TabPFN's CARBS / RS
+#: curves start with a huge area that flattens everything else.
+PER_Y_CLIP_QUANTILE_PER_BENCHMARK: dict[str, float] = {
+    BenchmarkEnum.TABPFN.value: 0.80,
+}
 
 
 def _filter_log_scale_spikes(
@@ -1971,6 +1978,7 @@ def plot_pareto_line_area_to_true_over_flops(
     title: str = "Pareto Line Area to True Over Optimization",
     flop_range: tuple[float, float] | None = None,
     normalize_flops: bool = True,
+    y_clip_quantile: float = 0.99,
 ) -> Any:
     """Plot area between fitted current Pareto line and fitted true Pareto line."""
     fig, ax = plt.subplots(figsize=figsize)
@@ -2060,7 +2068,7 @@ def plot_pareto_line_area_to_true_over_flops(
         ax.fill_between(flop_counts, lower, upper, alpha=0.2, color=color)
 
     ax.set_xlabel("Normalized FLOPs" if normalize_flops else "Cumulative FLOPs", fontsize=20)
-    ax.set_ylabel("PER (Quantile 99%)", fontsize=20)
+    ax.set_ylabel(f"PER (Quantile {y_clip_quantile:.0%})", fontsize=20)
     if effective_flop_range is not None:
         ax.set_xlim(effective_flop_range[0], effective_flop_range[1])
     elif normalize_flops:
@@ -2074,7 +2082,7 @@ def plot_pareto_line_area_to_true_over_flops(
         finite_y_values = np.concatenate(y_values_for_view)
         finite_y_values = finite_y_values[np.isfinite(finite_y_values) & (finite_y_values >= 0.0)]
         if len(finite_y_values) > 0:
-            y_upper = float(np.nanquantile(finite_y_values, 0.99))
+            y_upper = float(np.nanquantile(finite_y_values, y_clip_quantile))
             if y_upper > 0.0:
                 ax.set_ylim(0.0, y_upper * 1.05)
 
@@ -2703,19 +2711,9 @@ def plot_hypervolume_composite_across_benchmarks(
             ax.set_xlabel(ax_bench.get_xlabel())
             ax.set_ylabel(ax_bench.get_ylabel())
             ax.set_xscale(ax_bench.get_xscale())
-            benchmark_x_values: list[np.ndarray] = []
-            for line in ax_bench.get_lines():
-                if line.get_transform() == ax_bench.get_yaxis_transform():
-                    continue
-                x_values = np.asarray(line.get_xdata(), dtype=float)
-                x_values = x_values[np.isfinite(x_values) & (x_values > 0)]
-                if len(x_values) > 0:
-                    benchmark_x_values.append(x_values)
-            if benchmark_x_values:
-                all_benchmark_x = np.concatenate(benchmark_x_values)
-                ax.set_xlim(float(np.min(all_benchmark_x)), float(np.max(all_benchmark_x)))
-            else:
-                ax.set_xlim(ax_bench.get_xlim())
+            # Same x-range as the Pareto-area (PER) composite.
+            bench_flop_range = flop_ranges_per_benchmark[benchmark_name]
+            ax.set_xlim(bench_flop_range[0], bench_flop_range[1])
             # ax.set_title(benchmark_name, fontsize=12)
             ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
             
@@ -2829,6 +2827,7 @@ def plot_pareto_line_area_composite_across_benchmarks(
                 figsize=(5.5, 3.5),
                 flop_range=bench_flop_range,
                 normalize_flops=False,
+                y_clip_quantile=PER_Y_CLIP_QUANTILE_PER_BENCHMARK.get(benchmark_name, 0.99),
                 return_split=False,
             ))
 
@@ -2910,9 +2909,9 @@ if __name__ == '__main__':
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     benchmarks = [
-        BenchmarkEnum.OPENCLIP.value, 
-        BenchmarkEnum.LLM.value,
-        # BenchmarkEnum.TABPFN.value,
+        # BenchmarkEnum.OPENCLIP.value, 
+        # BenchmarkEnum.LLM.value,
+        BenchmarkEnum.TABPFN.value,
     ]
 
     pareto_merged = {}
@@ -3041,15 +3040,29 @@ if __name__ == '__main__':
         axes_pa_comp_without = None
 
     if fig_pa_comp_without is not None and fig_hv_comp_without is not None:
-        fig_without_metrics_combined, _ = merge_split_composite_plots(
-            (
-                (fig_pa_comp_without, axes_pa_comp_without),
-                (fig_hv_comp_without, axes_hv_comp_without),
-                (fig_loss_comp_without, axes_loss_comp_without),
-            ),
-            close_sources=True,
-            n_per_row= 1+ len(benchmarks)
+        metric_results = (
+            (fig_pa_comp_without, axes_pa_comp_without),
+            (fig_hv_comp_without, axes_hv_comp_without),
+            (fig_loss_comp_without, axes_loss_comp_without),
         )
+        if len(benchmarks) == 1:
+            # Single benchmark: drop the across-benchmark ranking panel (axes[0])
+            # and lay the three metrics out in one row.
+            metric_results = tuple(
+                (fig, np.asarray(axes).flatten()[1:]) for fig, axes in metric_results
+            )
+            fig_without_metrics_combined, _ = merge_split_composite_plots(
+                metric_results,
+                close_sources=True,
+                n_per_row=len(metric_results),
+                panel_labels=True,
+            )
+        else:
+            fig_without_metrics_combined, _ = merge_split_composite_plots(
+                metric_results,
+                close_sources=True,
+                n_per_row=1 + len(benchmarks),
+            )
         fig_without_metrics_combined.savefig(
             plots_dir / "without_priors_metrics_composite.pdf",
             dpi=300,

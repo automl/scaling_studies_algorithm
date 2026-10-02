@@ -22,7 +22,7 @@ RUN pip install --upgrade pip \
     && pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision \
     && pip install ./subs ./dep/carbs \
     # autogluon's umbrella package pulls autogluon.multimodal/.timeseries, which
-    # conflict with neps' networkx pin; scan_benchmark's code only ever imports
+    # conflict with neps' networkx pin; scan_bench's code only ever imports
     # autogluon.tabular, so install its declared deps directly instead.
     && pip install --no-deps ./dep/scan_bench_suite \
     && pip install \

@@ -6,13 +6,13 @@ RESULTS_DIR="/Users/nastaranalipour/Downloads/work/dlc2workfs2/alipourn-scan"
 BENCHMARK="llm"
 
 # Trained ensemble_xgb/ensemble_xgb surrogates get cached as .joblib files
-# inside scan_benchmark's own package dir (see base_performance_benchmark.py's
+# inside scan_bench's own package dir (see base_performance_benchmark.py's
 # _prepare_surrogate_for_target). That path lives inside the container's
 # filesystem, so without this mount every fresh container retrains from
 # scratch. Sharing one host dir across containers lets them reuse each
 # other's trained models instead of redoing the same training every run.
 MODEL_CACHE_DIR="/Users/nastaranalipour/Documents/scaling_studies_algorithm/.docker_model_cache_llm"
-MODEL_CACHE_CONTAINER_PATH="/usr/local/lib/python3.11/site-packages/scan_benchmark/llm/performance_surrogate/saved_models"
+MODEL_CACHE_CONTAINER_PATH="/usr/local/lib/python3.11/site-packages/scan_bench/llm/performance_surrogate/saved_models"
 mkdir -p "$MODEL_CACHE_DIR"
 
 SEEDS=(40 41 42 43 44 45 46 47 48 49 50)

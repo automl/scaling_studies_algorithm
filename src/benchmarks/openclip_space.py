@@ -3,8 +3,7 @@ import copy
 
 import neps
 
-from scan_benchmark.vlm.api import VLMBenchmark, VLMConfig, VLMTarget
-from scan_benchmark.base_performance_benchmark import PerformancePredictorType
+from scan_bench import VLMBenchmark, VLMConfig, VLMTarget, PerformancePredictorType
 
 
 WIDTH_CHOICES = [32, 64, 128, 192, 256, 320, 384, 448, 512, 768, 1024]

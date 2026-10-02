@@ -23,7 +23,7 @@ def _openclip_arch_stats(df: pd.DataFrame) -> tuple["pd.Series", "pd.Series"]:
     the numbers from there makes the reference front exactly commensurate with
     the `extra.n_param` / `extra.flops` of the trials plotted against it.
     """
-    table = json.loads(files("scan_benchmark.vlm").joinpath("flops_params.json").read_text())
+    table = json.loads(files("scan_bench.vlm").joinpath("flops_params.json").read_text())
     keys = "text_" + df["text_width"].astype(int).astype(str) + "_vision_" + df["vision_width"].astype(int).astype(str)
 
     params = keys.map(lambda k: (table.get(k) or {}).get("params"))
@@ -67,6 +67,40 @@ def _llm_config(row: "pd.Series") -> dict[str, Any]:
     }
 
 
+def _tabpfn_completed(df: pd.DataFrame) -> "pd.Series":
+    """Rows of tabpfn/data.csv that an optimizer could actually have produced.
+
+    Every row is a finished run, so this is not a completion filter but a task
+    distribution one: `tabpfn_space.normalize_tabpfn_config` injects
+    max_features / num_datapoints_max as fixed constants, so rows measured at any
+    other setting are outside the reachable space and must not enter the
+    reference front -- they would put the "Empirical Best Loss" line below
+    anything the study can attain.
+    """
+    from src.benchmarks.tabpfn_space import MAX_FEATURES, NUM_DATAPOINTS_MAX
+
+    return (
+        (df["config/max_features"] == MAX_FEATURES)
+        & (df["config/num_datapoints_max"] == NUM_DATAPOINTS_MAX)
+    )
+
+
+def _tabpfn_config(row: "pd.Series") -> dict[str, Any]:
+    """Row of tabpfn/data.csv as a TabPFN pipeline-space config.
+
+    In the csv's own (actual) quantities, which is what the space uses too.
+    max_features / num_datapoints_max are not searchables, so they are not part
+    of the config.
+    """
+    return {
+        "lr": float(row["config/lr"]),
+        "effective_batch_size": int(row["config/effective_batch_size"]),
+        "embedding_size": int(row["config/model_config.embedding_size"]),
+        "num_layers": int(row["config/model_config.num_layers"]),
+        "total_cells": float(row["total_cells"]),
+    }
+
+
 class _CsvSpec:
     """How to read one benchmark's measured runs into (n_params, n_data, loss, flops).
 
@@ -84,6 +118,7 @@ class _CsvSpec:
         stats: Callable[[pd.DataFrame], tuple["pd.Series", "pd.Series"]],
         n_data: Callable[[pd.DataFrame], "pd.Series"],
         config_of_row: Callable[["pd.Series"], dict[str, Any]],
+        monotonic_params: bool = True,
     ):
         self.package = package
         self.csv_names = csv_names
@@ -92,6 +127,8 @@ class _CsvSpec:
         self.stats = stats  # df -> (n_params, flops)
         self.n_data = n_data
         self.config_of_row = config_of_row
+        # Whether the front may only shrink in model size toward lower compute.
+        self.monotonic_params = monotonic_params
 
     def load(self) -> pd.DataFrame:
         # Resolve through the installed package, the way the benchmarks load their
@@ -102,7 +139,7 @@ class _CsvSpec:
 
 CSV_SPECS: dict[str, _CsvSpec] = {
     "openclip": _CsvSpec(
-        package="scan_benchmark.vlm",
+        package="scan_bench.vlm",
         csv_names=["data.csv"],
         default_target="val_loss",
         completed=lambda df: df["training_progress"] >= 1.0,
@@ -112,7 +149,7 @@ CSV_SPECS: dict[str, _CsvSpec] = {
     ),
     # Exactly what LLMBenchmark.__init__ loads.
     "llm": _CsvSpec(
-        package="scan_benchmark.llm",
+        package="scan_bench.llm",
         csv_names=["splits/train.csv", "splits/test.csv"],
         default_target="valid_loss",
         completed=lambda df: df["eval_step"] == df["final_step"],
@@ -120,6 +157,21 @@ CSV_SPECS: dict[str, _CsvSpec] = {
         stats=lambda df: (df["n_param"], df["flops_so_far"]),
         n_data=lambda df: df["n_data"],
         config_of_row=_llm_config,
+    ),
+    # data.csv carries params and flops directly, the same columns the TabPFN
+    # surrogate is fitted on, so no arch table is needed.
+    "tabpfn": _CsvSpec(
+        package="scan_bench.tabpfn",
+        csv_names=["data.csv"],
+        default_target="val/val_loss",
+        completed=_tabpfn_completed,
+        stats=lambda df: (df["parameters"], df["total_flops"]),
+        n_data=lambda df: df["total_cells"],
+        config_of_row=_tabpfn_config,
+        # Param count along TabPFN's front is not ordered by compute (data and
+        # feature settings matter as much), so the monotonic filter would drop
+        # most non-dominated runs -- 16 of 23, including everything below 1.5e12.
+        monotonic_params=False,
     ),
 }
 
@@ -138,13 +190,17 @@ def _enforce_monotonic_params(pareto_front: list[tuple]) -> list[tuple]:
     return monotonic[::-1]
 
 
-def empirical_pareto_front_from_csv(benchmark_name: str, target: str | None = None) -> dict[str, list]:
-    """Pareto front of the benchmark's measured runs, at their final checkpoint.
+def measured_runs_from_csv(
+    benchmark_name: str, target: str | None = None
+) -> tuple[_CsvSpec, pd.DataFrame, pd.DataFrame]:
+    """The benchmark's usable measured runs, at their final checkpoint.
 
-    `target` names a column of the benchmark's csv -- every `VLMTarget` /
-    `LLMTarget` value is one -- and defaults to that benchmark's validation loss.
-    Accuracy-like targets are flipped to `1 - acc` so the front minimizes, the
-    same convention `process_seed` uses for the trajectories plotted against it.
+    Returns (spec, raw rows, frame of n_params/n_data/loss/flops indexed like the
+    raw rows). `target` names a column of the benchmark's csv -- every
+    `VLMTarget` / `LLMTarget` value is one -- and defaults to that benchmark's
+    validation loss. Accuracy-like targets are flipped to `1 - acc` so the front
+    minimizes, the same convention `process_seed` uses for the trajectories
+    plotted against it.
     """
     from src.plotting.utils import target_loss_key, to_minimizable
 
@@ -172,12 +228,21 @@ def empirical_pareto_front_from_csv(benchmark_name: str, target: str | None = No
     frame = frame[frame.apply(np.isfinite).all(axis=1) & (frame["flops"] > 0) & (frame["loss"] > 0)]
     if frame.empty:
         raise ValueError(f"No completed run of {benchmark_name} has a usable '{column}'")
+    return spec, df, frame
 
-    rows = list(frame.itertuples(index=True, name=None))  # (idx, n_params, n_data, loss, flops)
+
+def empirical_pareto_front_from_csv(benchmark_name: str, target: str | None = None) -> dict[str, list]:
+    """Pareto front of the benchmark's measured runs (see `measured_runs_from_csv`)."""
+    spec, df, frame = measured_runs_from_csv(benchmark_name, target)
+    column = target or spec.default_target
+
+    rows =list(frame.itertuples(index=True, name=None))  # (idx, n_params, n_data, loss, flops)
     # Same non-domination the optimizer uses, so this front is directly comparable
     # to the ones computed from a study's trials.
     pareto = ScalingLawGuidedOptimizer._compute_pareto_front([r[1:] for r in rows])
-    pareto = _enforce_monotonic_params(pareto)
+    if spec.monotonic_params:
+        pareto = _enforce_monotonic_params(pareto)
+    pareto = sorted(pareto, key=lambda row: row[3])  # ascending flops, as the monotonic pass returns it
 
     row_index = {r[1:]: r[0] for r in rows}
     configs = [spec.config_of_row(df.loc[row_index[point]]) for point in pareto]

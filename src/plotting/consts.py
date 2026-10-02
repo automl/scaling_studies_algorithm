@@ -19,7 +19,7 @@ target = os.environ.get(TARGET_ENV_VAR) or None
 acc_flop_ranges_per_benchmark = {
     BenchmarkEnum.OPENCLIP.value: (4e16, get_benchmark(BenchmarkEnum.OPENCLIP.value, False, predictor_type=predictor_type, lazy=True).max_evaluation_flops * 0.9),
     BenchmarkEnum.LLM.value: (5.1e18, get_benchmark(BenchmarkEnum.LLM.value, False, predictor_type=predictor_type, lazy=True).max_evaluation_flops * 0.9),
-    BenchmarkEnum.TABPFN.value: (5e15, get_benchmark(BenchmarkEnum.TABPFN.value, False, predictor_type=predictor_type, lazy=True).max_evaluation_flops * 0.9),
+    BenchmarkEnum.TABPFN.value: (9.9e13, get_benchmark(BenchmarkEnum.TABPFN.value, False, predictor_type=predictor_type, lazy=True).max_evaluation_flops * 0.9),
 }
 
 search_space_per_benchmark = {bench.value: convert_neps_to_classic_search_space(get_benchmark(bench.value, False, predictor_type=predictor_type, lazy=True).space) for bench in BenchmarkEnum}
@@ -29,7 +29,7 @@ params_estimator_per_benchmark = {bench.value: get_benchmark(bench.value, False,
 acc_pred_flop_ranges_per_benchmark = {
     BenchmarkEnum.OPENCLIP.value: (4e16, get_benchmark(BenchmarkEnum.OPENCLIP.value, False, predictor_type=predictor_type, lazy=True).max_evaluation_flops * 0.9),
     BenchmarkEnum.LLM.value: (5.1e18, get_benchmark(BenchmarkEnum.LLM.value, False, predictor_type=predictor_type, lazy=True).max_evaluation_flops * 0.9),
-    BenchmarkEnum.TABPFN.value: (5e15, get_benchmark(BenchmarkEnum.TABPFN.value, False, predictor_type=predictor_type, lazy=True).max_evaluation_flops * 0.9),
+    BenchmarkEnum.TABPFN.value: (9.9e13, get_benchmark(BenchmarkEnum.TABPFN.value, False, predictor_type=predictor_type, lazy=True).max_evaluation_flops * 0.9),
 }
 
 selected_best_seed_per_benchmark = {
@@ -53,7 +53,7 @@ flop_range_to_show_in_pareto_per_benchmark = {
     ),
 }
 
-target_flop_multipliers = (10, 20, 25)
+target_flop_multipliers = (10, 20)
 
 target_flop_list_per_benchmark = {
     benchmark.value: [
@@ -80,7 +80,7 @@ acc_pred_flop_ranges_per_benchmark_by_ratio = {
 true_pareto_info_per_benchmark = {
     BenchmarkEnum.OPENCLIP.value: load_or_generate_pareto_info(BenchmarkEnum.OPENCLIP.value, target=target),
     BenchmarkEnum.LLM.value: load_or_generate_pareto_info(BenchmarkEnum.LLM.value, target=target),
-    # BenchmarkEnum.TABPFN.value: load_or_generate_pareto_info(BenchmarkEnum.TABPFN.value),
+    BenchmarkEnum.TABPFN.value: load_or_generate_pareto_info(BenchmarkEnum.TABPFN.value),
 }
 
 bench_confs = {
@@ -90,7 +90,7 @@ bench_confs = {
     # lazy=True `bench` is None, so every call raised inside the wrapper's
     # try/except and silently returned NaN, making every "actual_loss" prediction
     # look diverged. TABPFN stays lazy=True: eagerly constructing it currently
-    # crashes (installed scan_benchmark.tabpfn.api is missing an `import os`),
+    # crashes (installed scan_bench.tabpfn.api is missing an `import os`),
     # and table.py's benchmark loop excludes TABPFN anyway.
     BenchmarkEnum.OPENCLIP.value: get_benchmark(BenchmarkEnum.OPENCLIP.value, False, predictor_type=predictor_type, lazy=True),
     BenchmarkEnum.LLM.value: get_benchmark(BenchmarkEnum.LLM.value, False, predictor_type=predictor_type, lazy=True),

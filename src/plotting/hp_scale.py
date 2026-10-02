@@ -390,8 +390,7 @@ if __name__ == "__main__":
             BenchmarkEnum.OPENCLIP: GRID_STUDY_BASE_DIR / "openclip" / "grid_search",
             BenchmarkEnum.LLM: GRID_STUDY_BASE_DIR / "llm" / "grid_search",
         }
-        from dep.scan_bench_suite.scan_benchmark.llm.api import LLMTarget
-        from dep.scan_bench_suite.scan_benchmark.vlm.api import VLMTarget
+        from scan_bench import LLMTarget, VLMTarget
         targets_per_bench = {BenchmarkEnum.LLM: LLM_TARGETS, BenchmarkEnum.OPENCLIP: VLMTarget.all()}
         targets = targets_per_bench[bench]
         path = pathes[bench]

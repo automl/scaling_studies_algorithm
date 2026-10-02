@@ -22,25 +22,13 @@ git submodule update --init
 
 mkdir -p dep
 git clone https://github.com/imbue-ai/carbs dep/carbs
-git clone <SCAN_BENCH_SUITE_REPO_HERE> dep/scan_bench_suite
 
 pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
 
 pip install ./subs ./dep/carbs
 
 (cd dep/scan_bench_suite && python -m build --wheel)
-pip install --no-deps dep/scan_bench_suite/dist/scan_benchmark-0.1.2-py3-none-any.whl
-
-# scan_benchmark's dependencies, supplied explicitly because of --no-deps above
-pip install \
-    xgboost==3.1.3 \
-    scikit-learn==1.7.2 \
-    tabpfn==6.4.1 \
-    matplotlib \
-    seaborn \
-    tqdm \
-    lightgbm==4.6.0 \
-    "autogluon.tabular==1.5.0"
+pip install scan-bench
 ```
 
 (See [Dockerfile](Dockerfile) for a containerized version of the same install.)

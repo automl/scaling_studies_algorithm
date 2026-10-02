@@ -12,7 +12,7 @@ from pathlib import Path
 from neps.state.neps_state import TrialRepo
 from neps.utils.files import deserialize, serialize
 
-from scan_benchmark.base_performance_benchmark import PerformancePredictorType
+from scan_bench import PerformancePredictorType
 from src.baselines.configs import OptimizerEnum
 from src.benchmarks.configs import get_benchmark, get_results_dir, get_target, set_predictor_type, BenchmarkEnum
 

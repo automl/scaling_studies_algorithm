@@ -2,7 +2,7 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-PREDS=(tabpfn ensemble_xgb ensemble_lightgbm ensemble_mix)
+PREDS=(tabpfn)
 
 for pred in "${PREDS[@]}"; do
     echo "Running standalone with SCAN_PREDICTOR_TYPE=$pred"

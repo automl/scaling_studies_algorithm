@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from scan_benchmark.base_performance_benchmark import PerformancePredictorType
+from scan_bench import PerformancePredictorType
 import neps
 from typing import Callable
 from enum import Enum
@@ -126,11 +126,16 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool, predictor_type
             )
         case BenchmarkEnum.TABPFN:
             bench = tabpfn.get_benchmark(predictor_type=predictor_type, target=target)if not lazy else None
-            # 3.398452e+07 parameters, 3.435974e+10 data points, total flops: 7.060368e+18
-            # 1.060200e+04 parameters, 1.048576e+06 data points, total flops: 5.676123e+10
-            min_flops = 5.676123e+10
-            max_flops = 1e+16
-            total_eval_flops = max_flops * 3.9
+            # Space corners, from `python -m src.benchmarks.tabpfn_space`:
+            # 3.398452e+07 parameters, 3.435974e+10 data points, total flops: 6.931727e+18
+            # 1.060200e+04 parameters, 1.048576e+06 data points, total flops: 8.548727e+10
+            min_flops = 8.548727e+10
+            # Anchored on the largest Pareto-optimal point (FLOPs vs val/val_loss) of the
+            # measured data.csv, restricted to max_features=32 / num_datapoints_max=128
+            # That point is 5.582393e+15 FLOPs (loss 0.8732) and nothing improves on it up to
+            # the slice's largest measured run (1.084e+17), so it is the 20x target.
+            max_flops = 2.791197e+14  # = 5.582393e+15 / 20
+            total_eval_flops = max_flops * 10
             return BenchmarkConfig(
                 space=tabpfn.get_pipeline_space(),
                 params_estimator=tabpfn.parameters_estimator_wrapper(bench),

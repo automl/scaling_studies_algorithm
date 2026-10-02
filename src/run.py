@@ -13,7 +13,7 @@ import torch
 import random
 import neps
 
-from scan_benchmark.base_performance_benchmark import PerformancePredictorType
+from scan_bench import PerformancePredictorType
 from src.baselines.configs import OptimizerEnum, get_optimizer_wrapper
 from src.benchmarks.configs import get_benchmark, get_results_dir, set_predictor_type, BenchmarkEnum
 

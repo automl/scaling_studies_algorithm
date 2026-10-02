@@ -10,11 +10,10 @@ import inspect
 import json
 from pathlib import Path
 
-from scan_benchmark.base_performance_benchmark import PerformancePredictorType
+from scan_bench import LLMBenchmark, LLMConfig, LLMTarget, PerformancePredictorType
 import neps
 
 
-from scan_benchmark.llm.api import LLMBenchmark, LLMConfig, LLMTarget
 
 LLM_TARGETS = [
     LLMTarget.VAL_LOSS,
@@ -37,7 +36,7 @@ def get_benchmark(predictor_type: PerformancePredictorType = PerformancePredicto
         predictor_type=predictor_type
     )
 
-MIN_N_HEADS, MAX_N_HEADS = 6, 38  # must match valid_n_heads in scan_benchmark.llm.config.LLMConfig
+MIN_N_HEADS, MAX_N_HEADS = 6, 38  # must match valid_n_heads in scan_bench.LLMConfig
 
 def find_closest_divisible_n_heads(d_model: int, n_heads: int) -> int:
     for nh in range(n_heads, MIN_N_HEADS - 2, -2):

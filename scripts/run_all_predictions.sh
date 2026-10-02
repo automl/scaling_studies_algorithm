@@ -2,7 +2,7 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-PREDS=(tabpfn ensemble_xgb ensemble_lightgbm ensemble_mix)
+PREDS=(tabpfn)
 
 # Optional: plot a post-hoc downstream target instead of each study's own objective,
 # e.g. `SCAN_TARGET=imagenet1k_acc1 scripts/run_all_predictions.sh`. The target must

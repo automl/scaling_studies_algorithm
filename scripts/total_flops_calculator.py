@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import neps
 from neps.state.trial import State
-from scan_benchmark.base_performance_benchmark import PerformancePredictorType
+from scan_bench import PerformancePredictorType
 
 # Add the src directory to the Python path to allow for importing modules from there
 sys.path.append(str(Path(__file__).parent.parent))

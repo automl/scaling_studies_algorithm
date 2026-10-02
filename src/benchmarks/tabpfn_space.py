@@ -3,9 +3,7 @@ import copy
 
 import neps
 
-from scan_benchmark.tabpfn.api import TabPFNBenchmark, TabPFNConfig, TabPFNTarget
-from scan_benchmark.base_performance_benchmark import PerformancePredictorType
-
+from scan_bench import TabPFNBenchmark, TabPFNConfig, TabPFNTarget, PerformancePredictorType
 TABPFN_TARGETS = [
     TabPFNTarget.VAL_LOSS,
     # TabPFNTarget.NLL,

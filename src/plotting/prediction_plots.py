@@ -2669,9 +2669,9 @@ if __name__ == "__main__":
             all_seeds, results_dir, optimizers_dict, loss_key, target, search_space_per_benchmark, cost_estimator_per_benchmark, params_estimator_per_benchmark
     
     benchmarks = [
-        BenchmarkEnum.OPENCLIP.value,
-        BenchmarkEnum.LLM.value,
-        # BenchmarkEnum.TABPFN.value,
+        # BenchmarkEnum.OPENCLIP.value,
+        # BenchmarkEnum.LLM.value,
+        BenchmarkEnum.TABPFN.value,
     ]
 
 
@@ -3024,8 +3024,8 @@ if __name__ == "__main__":
 
     benchmarks = [
         # BenchmarkEnum.OPENCLIP.value, 
-        BenchmarkEnum.LLM.value,
-        # BenchmarkEnum.TABPFN.value,
+        # BenchmarkEnum.LLM.value,
+        BenchmarkEnum.TABPFN.value,
     ]
 
 

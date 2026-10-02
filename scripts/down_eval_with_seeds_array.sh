@@ -16,7 +16,18 @@
 #
 # The array size must be NUM_OPTIMIZERS * NUM_SEEDS * NUM_PREDS * NUM_TARGETS - 1.
 
-source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+# sbatch copies the batch script into Slurm's spool dir, so BASH_SOURCE no longer
+# points at scripts/. Fall back to the directory the job was submitted from.
+_common=""
+for _dir in "$(dirname "${BASH_SOURCE[0]}")" "${SLURM_SUBMIT_DIR:-}" "${SLURM_SUBMIT_DIR:-}/scripts"; do
+    if [[ -n "$_dir" && -f "$_dir/_common.sh" ]]; then _common="$_dir/_common.sh"; break; fi
+done
+if [[ -z "$_common" ]]; then
+    echo "error: cannot locate scripts/_common.sh (submit from the repo root or scripts/)" >&2
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "$_common"
 
 SEEDS=(40 41 42 43 44 45 46 47 48 49 50)
 OPTIMIZERS=(chinchilla_approach1 chinchilla_approach2 random_search carbs)

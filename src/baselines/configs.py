@@ -142,6 +142,7 @@ def get_optimizer_wrapper(pipeline_space, evaluate_pipeline, param_estimator, se
                     data_parameter_name=data_parameter_name,
                     evaluate_pipeline=evaluate_pipeline,
                     root_dir=root_dir,
+                    benchmark_type=benchmark_type,
                     )
                 return optimizer, kwargs | {"evaluate_pipeline": evaluate_pipeline_wrapper(carbs_opt, evaluate_pipeline, flops_estimator, max_flops)}
             case _:

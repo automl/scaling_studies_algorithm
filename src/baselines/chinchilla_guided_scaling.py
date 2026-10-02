@@ -36,6 +36,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+DATA_MULTIPLIERS_PER_BENCHMARK = {
+    BenchmarkEnum.TABPFN: [10 ** (k / 4) for k in range(25)],  # 1 ... 1e6, quarter-decade
+    BenchmarkEnum.LLM: [5, 10, 20, 80],
+    BenchmarkEnum.OPENCLIP: [0.15, 0.3, 0.5, 4, 16, 20],
+}
+
+ISO_FLOP_STEPS_PER_BENCHMARK = {BenchmarkEnum.TABPFN: 20}
+DEFAULT_ISO_FLOP_STEPS = 10
+
+
 @dataclass
 class ScalingLawParameters:
     E: float
@@ -199,15 +209,13 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         data_param = parameters[self.data_parameter_name]
         
         # Create dynamic data grid using Chinchilla principle: find data_param values for different multipliers
-        # Target multipliers: 5*N, 10*N, 20*N, 80*N (or adjusted based on domain)
-        # data_multipliers = [5, 10, 20, 80]
-        if self.benchmark_type == BenchmarkEnum.TABPFN:
-            data_multipliers = [50, 80, 100, 200, 400, 600, 700, 800, 900, 1000]
-        elif self.benchmark_type == BenchmarkEnum.LLM:
-            data_multipliers = [5, 10, 20, 80]
-        elif self.benchmark_type == BenchmarkEnum.OPENCLIP:
-            # data_multipliers = [0.15, 0.3, 0.6, 2.4]
-            data_multipliers = [0.15, 0.3, 0.5, 4, 16, 20]
+        try:
+            data_multipliers = DATA_MULTIPLIERS_PER_BENCHMARK[self.benchmark_type]
+        except KeyError:
+            raise ValueError(
+                f"approach1 has no data_multipliers for benchmark {self.benchmark_type!r}; "
+                f"add one to DATA_MULTIPLIERS_PER_BENCHMARK"
+            ) from None
 
         config_list = []
         
@@ -304,7 +312,9 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
     
     def approach2_generate_config_list(self, num_candidate_per_iso_flop: int = 5) -> tuple[list[dict[str, Any]], defaultdict[int, list[tuple]]]:
 
-        iso_flops = self._generate_iso_flop_list()
+        iso_flops = self._generate_iso_flop_list(
+            num_steps=ISO_FLOP_STEPS_PER_BENCHMARK.get(self.benchmark_type, DEFAULT_ISO_FLOP_STEPS)
+        )
         logger.info(f"Generated {len(iso_flops)} ISO-FLOP values: {[f'{f:.2e}' for f in iso_flops]}... (total: {sum(iso_flops):.2e})")
         
 
@@ -572,7 +582,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         closest = min(iso_flops, key=lambda x: abs(x - estimated_flops))
         return closest, closest / estimated_flops
 
-    def _generate_iso_flop_list(self, num_steps: int = 10) -> list[float]:
+    def _generate_iso_flop_list(self, num_steps: int = DEFAULT_ISO_FLOP_STEPS) -> list[float]:
         # assume that all the HPs are increasing, the other solution could be to get all possible grids and calc the flops for alll and get min and max there.
  
         return torch.logspace(math.log10(self.min_flops * 2), math.log10(self.max_flops), steps=num_steps).tolist()

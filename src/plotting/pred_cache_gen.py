@@ -30,7 +30,7 @@ python -m src.plotting.pred_cache_gen --optimizer bo_left_budget_modified_jes --
 if __name__ == "__main__":
     import argparse
 
-    from scan_benchmark.base_performance_benchmark import PerformancePredictorType
+    from scan_bench import PerformancePredictorType
     from src.benchmarks.configs import BenchmarkEnum, set_predictor_type
 
     # src.plotting.consts resolves the results dir and benchmark configs at import
@@ -62,7 +62,7 @@ if __name__ == "__main__":
         "carbs": all_seeds,
     }
 
-    all_benchmarks = [BenchmarkEnum.OPENCLIP.value, BenchmarkEnum.LLM.value]
+    all_benchmarks = [BenchmarkEnum.OPENCLIP.value, BenchmarkEnum.LLM.value, BenchmarkEnum.TABPFN.value]
     all_optimizer_names = list(optimizers_dict.keys())
 
     parser = argparse.ArgumentParser(description="Pre-warm the prediction fit cache.", parents=[pred_parser])
