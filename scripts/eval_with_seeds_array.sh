@@ -7,7 +7,7 @@
 #SBATCH --mem=20G
 #SBATCH --job-name=scan_acquire
 #SBATCH --output=logs/%x-%a-%j.log
-#SBATCH --array=0-131
+#SBATCH --array=0-87
 
 # Data acquisition sweep: benchmark x optimizer x seed x predictor, one array
 # task per combination. Both surrogate benchmarks (llm, openclip) are covered
@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-BENCHMARKS=(llm openclip tabpfn)
+BENCHMARKS=(llm openclip)
 SEEDS=(40 41 42 43 44 45 46 47 48 49 50)
 OPTIMIZERS=(chinchilla_approach1 chinchilla_approach2 random_search carbs)
 PREDS=(tabpfn)

@@ -242,7 +242,7 @@ def plot_predicted_hp_table_over_flops(
     if target_flop <= 0:
         raise ValueError("target_flop must be positive")
 
-    table_optimizer_order = ("carbs", "random_search", "bo_left_budget_modified_jes")
+    table_optimizer_order = ("carbs", "random_search")
     filtered_optimizers = {
         opt_name: optimizers[opt_name]
         for opt_name in table_optimizer_order
@@ -768,7 +768,6 @@ if __name__ == "__main__":
         hp_target_flop_ratios, selected_best_seed_per_benchmark, \
         acc_pred_flop_ranges_per_benchmark, results_dir, loss_key, optimizers_dict
     benchmarks = [
-        # BenchmarkEnum.TABPFN.value,
         BenchmarkEnum.LLM.value,
         BenchmarkEnum.OPENCLIP.value,
     ]

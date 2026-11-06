@@ -67,40 +67,6 @@ def _llm_config(row: "pd.Series") -> dict[str, Any]:
     }
 
 
-def _tabpfn_completed(df: pd.DataFrame) -> "pd.Series":
-    """Rows of tabpfn/data.csv that an optimizer could actually have produced.
-
-    Every row is a finished run, so this is not a completion filter but a task
-    distribution one: `tabpfn_space.normalize_tabpfn_config` injects
-    max_features / num_datapoints_max as fixed constants, so rows measured at any
-    other setting are outside the reachable space and must not enter the
-    reference front -- they would put the "Empirical Best Loss" line below
-    anything the study can attain.
-    """
-    from src.benchmarks.tabpfn_space import MAX_FEATURES, NUM_DATAPOINTS_MAX
-
-    return (
-        (df["config/max_features"] == MAX_FEATURES)
-        & (df["config/num_datapoints_max"] == NUM_DATAPOINTS_MAX)
-    )
-
-
-def _tabpfn_config(row: "pd.Series") -> dict[str, Any]:
-    """Row of tabpfn/data.csv as a TabPFN pipeline-space config.
-
-    In the csv's own (actual) quantities, which is what the space uses too.
-    max_features / num_datapoints_max are not searchables, so they are not part
-    of the config.
-    """
-    return {
-        "lr": float(row["config/lr"]),
-        "effective_batch_size": int(row["config/effective_batch_size"]),
-        "embedding_size": int(row["config/model_config.embedding_size"]),
-        "num_layers": int(row["config/model_config.num_layers"]),
-        "total_cells": float(row["total_cells"]),
-    }
-
-
 class _CsvSpec:
     """How to read one benchmark's measured runs into (n_params, n_data, loss, flops).
 
@@ -157,21 +123,6 @@ CSV_SPECS: dict[str, _CsvSpec] = {
         stats=lambda df: (df["n_param"], df["flops_so_far"]),
         n_data=lambda df: df["n_data"],
         config_of_row=_llm_config,
-    ),
-    # data.csv carries params and flops directly, the same columns the TabPFN
-    # surrogate is fitted on, so no arch table is needed.
-    "tabpfn": _CsvSpec(
-        package="scan_bench.tabpfn",
-        csv_names=["data.csv"],
-        default_target="val/val_loss",
-        completed=_tabpfn_completed,
-        stats=lambda df: (df["parameters"], df["total_flops"]),
-        n_data=lambda df: df["total_cells"],
-        config_of_row=_tabpfn_config,
-        # Param count along TabPFN's front is not ordered by compute (data and
-        # feature settings matter as much), so the monotonic filter would drop
-        # most non-dominated runs -- 16 of 23, including everything below 1.5e12.
-        monotonic_params=False,
     ),
 }
 

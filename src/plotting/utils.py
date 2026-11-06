@@ -15,17 +15,7 @@ OPTIMIZER_LABELS: dict[str, str] = {
     "random_search": "RS",
     "chinchilla_approach1": "Chinchilla A1",
     "chinchilla_approach2": "Chinchilla A2",
-    "chinchilla_gemstones": "Chinchilla Gemstones",
     "carbs": "CARBS",
-    "bo_space_expansion_mes": "BO Space Expansion (MES)",
-    "bo_space_expansion_ei": "BO Space Expansion (EI)",
-    "bo_space_expansion_ei_cost_aware": "BO Space Expansion (EI, Cost-Aware)",
-    "bo_space_expansion_jes": "BO Space Expansion (JES)",
-    "bo_left_budget_zero_mean_ei": "BO Left Budget (zero-mean EI)",
-    "bo_left_budget": "BO Left Budget",
-    "bo_left_budget_mes": "BO Left Budget (MES)",
-    "bo_left_budget_ei": "BO Left Budget (EI)",
-    "bo_left_budget_jes": "BO Left Budget (JES)",
 }
 
 

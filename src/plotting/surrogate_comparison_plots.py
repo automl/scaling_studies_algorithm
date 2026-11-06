@@ -95,7 +95,8 @@ def _save_merged(panels, output_path):
 
 if __name__ == "__main__":
     benchmarks = [
-        BenchmarkEnum.TABPFN.value,
+        BenchmarkEnum.OPENCLIP.value,
+        BenchmarkEnum.LLM.value,
     ]
 
     plots_dir = RESULTS_BASE_DIR / "plots" / "surrogate_comparison"

@@ -15,14 +15,14 @@ Usage examples
 python -m src.plotting.pred_cache_gen
 
 # One optimizer + benchmark, all seeds
-python -m src.plotting.pred_cache_gen --optimizer bo_left_budget_modified_jes --benchmark llm
+python -m src.plotting.pred_cache_gen --optimizer carbs --benchmark llm
 
 # One job per seed (for SLURM array parallelism)
-python -m src.plotting.pred_cache_gen --optimizer bo_left_budget_modified_jes --benchmark llm --seed 42
+python -m src.plotting.pred_cache_gen --optimizer carbs --benchmark llm --seed 42
 
 # Several explicit seeds in one process -- loads/trains the benchmark
 # surrogate once and reuses it across all of them, instead of once per seed
-python -m src.plotting.pred_cache_gen --optimizer bo_left_budget_modified_jes --benchmark llm --seed 40 41 42 43
+python -m src.plotting.pred_cache_gen --optimizer carbs --benchmark llm --seed 40 41 42 43
 
 # Use scripts/gen_pred_cache_array.sh to launch one SLURM job per seed automatically.
 """
@@ -62,7 +62,7 @@ if __name__ == "__main__":
         "carbs": all_seeds,
     }
 
-    all_benchmarks = [BenchmarkEnum.OPENCLIP.value, BenchmarkEnum.LLM.value, BenchmarkEnum.TABPFN.value]
+    all_benchmarks = [BenchmarkEnum.OPENCLIP.value, BenchmarkEnum.LLM.value]
     all_optimizer_names = list(optimizers_dict.keys())
 
     parser = argparse.ArgumentParser(description="Pre-warm the prediction fit cache.", parents=[pred_parser])

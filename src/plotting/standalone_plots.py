@@ -148,11 +148,8 @@ def _get_log_scale_upper_clip(values: list[np.ndarray], quantile: float | None) 
     return float(10 ** np.nanquantile(np.log10(all_values), quantile))
 
 
-#: PER y-axis cap quantile per benchmark (default 0.99). TabPFN's CARBS / RS
-#: curves start with a huge area that flattens everything else.
-PER_Y_CLIP_QUANTILE_PER_BENCHMARK: dict[str, float] = {
-    BenchmarkEnum.TABPFN.value: 0.80,
-}
+#: PER y-axis cap quantile per benchmark (default 0.99).
+PER_Y_CLIP_QUANTILE_PER_BENCHMARK: dict[str, float] = {}
 
 
 def _filter_log_scale_spikes(
@@ -2909,9 +2906,8 @@ if __name__ == '__main__':
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     benchmarks = [
-        # BenchmarkEnum.OPENCLIP.value, 
-        # BenchmarkEnum.LLM.value,
-        BenchmarkEnum.TABPFN.value,
+        BenchmarkEnum.OPENCLIP.value,
+        BenchmarkEnum.LLM.value,
     ]
 
     pareto_merged = {}

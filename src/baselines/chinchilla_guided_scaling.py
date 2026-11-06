@@ -21,7 +21,7 @@ from src.baselines.utils.utils import _create_scaling_plot
 from src.benchmarks.configs import BenchmarkEnum
 from neps.state import BudgetInfo, Trial
 from neps.optimizers.optimizer import Artifact, ArtifactType
-from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer, fit_convex_hull_loglog, fit_pareto_front_loglog, _fit_loglog_line
+from neps.optimizers.scaling_law_guided import ScalingLawGuidedOptimizer, fit_pareto_front_loglog, _fit_loglog_line
 from neps.optimizers.grid_search import GridSearch
 from neps.optimizers.optimizer import ImportedConfig, AskFunction
 from neps.optimizers.algorithms import custom, CustomOptimizer
@@ -37,13 +37,11 @@ logger = logging.getLogger(__name__)
 
 
 DATA_MULTIPLIERS_PER_BENCHMARK = {
-    BenchmarkEnum.TABPFN: [10 ** (k / 4) for k in range(25)],  # 1 ... 1e6, quarter-decade
     BenchmarkEnum.LLM: [5, 10, 20, 80],
     BenchmarkEnum.OPENCLIP: [0.15, 0.3, 0.5, 4, 16, 20],
 }
 
-ISO_FLOP_STEPS_PER_BENCHMARK = {BenchmarkEnum.TABPFN: 20}
-DEFAULT_ISO_FLOP_STEPS = 10
+ISO_FLOP_STEPS = 10
 
 
 @dataclass
@@ -69,7 +67,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 evaluate_pipeline,
                 data_parameter_name,
                 max_flops,
-                strategy: Literal["approach1", "approach2", "gemstones"] = "gemstones",
+                strategy: Literal["approach1", "approach2"],
                 use_priors: bool = False,
                 benchmark_type: BenchmarkEnum = None
                 ) -> None:
@@ -99,8 +97,8 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
                 config_list, selected_model_configs = self.approach1_generate_config_list()
             case "approach2":
                 config_list, selected_model_configs = self.approach2_generate_config_list(num_candidate_per_iso_flop=10)
-            case "gemstones":
-                config_list, selected_model_configs = self.gemstones_generate_config_list()
+            case _:
+                raise ValueError(f"Unknown Chinchilla strategy: {self.strategy!r}")
 
         self.all_possible_model_configs = selected_model_configs
         self.config_list = config_list
@@ -312,9 +310,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
     
     def approach2_generate_config_list(self, num_candidate_per_iso_flop: int = 5) -> tuple[list[dict[str, Any]], defaultdict[int, list[tuple]]]:
 
-        iso_flops = self._generate_iso_flop_list(
-            num_steps=ISO_FLOP_STEPS_PER_BENCHMARK.get(self.benchmark_type, DEFAULT_ISO_FLOP_STEPS)
-        )
+        iso_flops = self._generate_iso_flop_list()
         logger.info(f"Generated {len(iso_flops)} ISO-FLOP values: {[f'{f:.2e}' for f in iso_flops]}... (total: {sum(iso_flops):.2e})")
         
 
@@ -441,148 +437,11 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         selected_model_configs = self.get_all_possible_model_configs(non_scaling_params)
         return config_list, selected_model_configs
 
-    def gemstones_generate_config_list(self):
-        parameters = self.space.searchables
-        non_scaling_params = self.sample_value_for_parameters(param_types="non-scaling")
-        steps = 30
-        scaling_non_data_grid = {
-            param_name: sorted(torch.unique(
-                param.domain.cast(
-                    torch.linspace(0, 1, steps=steps), frm=NepsDomain.unit_float()
-                )
-            ).tolist())
-            for param_name, param in parameters.items() 
-            if getattr(param, "is_scaling", False) and param_name != self.data_parameter_name
-        }
-
-        scaling_grid = {**scaling_non_data_grid, self.data_parameter_name: [parameters[self.data_parameter_name].domain.upper]}
-        
-        # Build all configurations and their parameter counts
-        n_param_grid = {}
-        all_confs_set = set()  # Use set to track unique configs
-        all_confs = []
-        for indices in itertools.product(*[range(len(grid)) for grid in scaling_grid.values()]):
-            conf = {param_name: scaling_grid[param_name][idx] 
-                    for param_name, idx in zip(scaling_grid.keys(), indices)}
-            conf.update(non_scaling_params)
-            
-            # Convert to hashable form to check uniqueness
-            conf_tuple = tuple(sorted(conf.items()))
-            if conf_tuple not in all_confs_set:
-                all_confs_set.add(conf_tuple)
-                all_confs.append(conf)
-            
-            n_params = self.params_estimator(**conf)
-            conf_key = tuple(sorted(conf.items()))
-            n_param_grid[conf_key] = n_params
-
-        # print(f"n_param_grid.values() {n_param_grid.values()}")
-        
-        # Extract valid parameter values and create bins
-        n_param_values = [n for n in n_param_grid.values() if n is not None]
-        if not n_param_values:
-            logger.warning("No valid parameter estimates found")
-            return ([], defaultdict(list))
-        
-        # Create 5 uniform bins
-        min_n, max_n = min(n_param_values), max(n_param_values)
-        param_bins = np.linspace(min_n, max_n, num=100)
-        threshold = 0.15  # ±10% threshold
-        
-        # Group configurations into bins with ±10% threshold
-        configs_per_bin = defaultdict(list)
-        for conf in all_confs:
-            n_params = self.params_estimator(**conf)
-            # Find closest bin
-            bin_idx = int(np.argmin(np.abs(param_bins - n_params)))
-            bin_center = param_bins[bin_idx]
-            bin_lower = bin_center * (1 - threshold)
-            bin_upper = bin_center * (1 + threshold)
-            
-            if bin_lower <= n_params <= bin_upper:
-                configs_per_bin[bin_idx].append(conf)
-            
-        
-        # Get bins with more than 10 configs
-        bins_with_enough_configs = [(bin_idx, len(confs)) for bin_idx, confs in configs_per_bin.items() if len(confs) > 5]
-        if not bins_with_enough_configs:
-            raise Exception("No bins with more than 5 configs found. Using all available bins.")
-        
-        # Sort by number of configs (descending) and select top 5
-        bins_with_enough_configs.sort(key=lambda x: x[1], reverse=True)
-        eligible_bin_indices = [bin_idx for bin_idx, _ in bins_with_enough_configs]
-        
-        logger.info(f"Binned configs into {len(configs_per_bin)} bins. Selected {len(eligible_bin_indices)} evenly-spaced bins: {eligible_bin_indices} with counts: {[len(configs_per_bin[b]) for b in eligible_bin_indices]}")
-        
-        conf_list = []
-        used_flops = 0
-        
-        # Track selected model parameter configurations
-        selected_model_configs = defaultdict(list)
-        
-        # Iterate through bins until budget exhausted
-        for bin_idx in eligible_bin_indices:
-            if bin_idx not in configs_per_bin or not configs_per_bin[bin_idx]:
-                continue
-            
-            # Sort configs in this bin by aspect ratio
-            bin_configs = configs_per_bin[bin_idx]
-            try:
-                sorted_configs = sorted(bin_configs, key=lambda c: self.aspect_ratio_fn(**c))
-            except Exception as e:
-                logger.warning(f"Could not sort configs by aspect ratio in bin {bin_idx}: {e}")
-                sorted_configs = bin_configs
-            
-            n = len(sorted_configs)
-            if n < 3:
-                continue
-            
-            # Select 3 strategic indices
-            first_idx = 0
-            middle_idx = n // 2
-            end_idx = n - 1
-            
-            selected_indices = [
-                (first_idx + middle_idx) // 2,  # Between first and middle
-                middle_idx,                      # Middle point
-                (middle_idx + end_idx) // 2      # Between middle and end
-            ]
-            
-            for idx in selected_indices:
-                idx = min(idx, n - 1)  # Ensure within bounds
-                conf = sorted_configs[idx]
-                
-                try:
-                    estimated_flops = self.flops_estimator(**conf)
-                except Exception as e:
-                    logger.warning(f"Could not estimate FLOPs for config: {e}")
-                    continue
-                
-                # Extract and track model config (without data param)
-                model_conf = tuple(sorted((k, v) for k, v in conf.items() if k != self.data_parameter_name))
-                n_param = self.params_estimator(**conf)
-                selected_model_configs[n_param].append(model_conf)
-
-                if used_flops + estimated_flops > self.max_evaluation_flops:
-                    logger.info(f"Reached FLOPS budget limit. Used: {used_flops:.2e}/{self.max_evaluation_flops:.2e}")
-                    continue
-                
-                conf_list.append(conf)
-                used_flops += estimated_flops
-                logger.debug(f"Added config from bin {bin_idx} (aspect_ratio={self.aspect_ratio_fn(**conf):.3f}). Total FLOPs: {used_flops:.2e}")
-        
-        # Store selected model parameter configs (without data param)
-        logger.info(f"Selected {len(selected_model_configs)} unique model configs for gemstones")
-        
-        logger.info(f"Generated {len(conf_list)} configs. Total FLOPs used: {used_flops:.2e}/{self.max_evaluation_flops:.2e}")
-        selected_model_configs = self.get_all_possible_model_configs(non_scaling_params)
-        return conf_list, selected_model_configs
-    
     def _get_closest_iso_flop(self, estimated_flops: float, iso_flops: list[float]) -> tuple[float, float]:
         closest = min(iso_flops, key=lambda x: abs(x - estimated_flops))
         return closest, closest / estimated_flops
 
-    def _generate_iso_flop_list(self, num_steps: int = DEFAULT_ISO_FLOP_STEPS) -> list[float]:
+    def _generate_iso_flop_list(self, num_steps: int = ISO_FLOP_STEPS) -> list[float]:
         # assume that all the HPs are increasing, the other solution could be to get all possible grids and calc the flops for alll and get min and max there.
  
         return torch.logspace(math.log10(self.min_flops * 2), math.log10(self.max_flops), steps=num_steps).tolist()
@@ -815,9 +674,8 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         return rows if rows else None
 
     def _plot_flop_vs_param_and_data(self, trials: Mapping[str, Trial]) -> tuple[Figure, Figure] | None:
-        use_lc_aware = self.strategy in ["approach1", "gemstones"]
-        use_pareto_fit = self.strategy in ["approach1", "approach2"]
-        pareto_data = self.extract_pareto_front_data(trials, lc_aware=use_lc_aware, pareto_fit=use_pareto_fit)
+        use_lc_aware = self.strategy == "approach1"
+        pareto_data = self.extract_pareto_front_data(trials, lc_aware=use_lc_aware, pareto_fit=True)
         
         xs = pareto_data['flops']
         ys_params = pareto_data['params']
@@ -884,10 +742,8 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         sorted_param_counts = sorted(set(n_params for n_params, _, _ in rows))
         
         # Fit Pareto front
-        use_lc_aware = self.strategy in ["approach1", "gemstones"]
-        use_pareto_fit = self.strategy in ["approach1", "approach2"]
-        fit_func = fit_pareto_front_loglog if use_pareto_fit else fit_convex_hull_loglog
-        slope, intercept, fitted_objs, flops_front, objs_front, *_ = fit_func(trials, lc_aware=use_lc_aware)
+        use_lc_aware = self.strategy == "approach1"
+        slope, intercept, fitted_objs, flops_front, objs_front, *_ = fit_pareto_front_loglog(trials, lc_aware=use_lc_aware)
         
         # Create plot
         fig = self._create_lc_plot(sorted_param_counts, trial_learning_curves, 
@@ -920,13 +776,8 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         
         # Overlay Pareto front
         if slope is not None and fitted_objs is not None:
-            if self.strategy in ["gemstones"]:
-                ax.plot(flops_front, objs_front, 'b--', linewidth=2.5, alpha=0.9, 
-                    label='Lower Convex Hull', zorder=3)
-                ax.scatter(flops_front, objs_front, c='black', s=100, marker='x', alpha=0.9, zorder=4)
-            else:
-                ax.plot(flops_front, fitted_objs, 'g--', linewidth=2.5, alpha=0.9, 
-                    label=f'Pareto fit (slope={slope:.3f})', zorder=3)
+            ax.plot(flops_front, fitted_objs, 'g--', linewidth=2.5, alpha=0.9, 
+                label=f'Pareto fit (slope={slope:.3f})', zorder=3)
         
         # Configure axes
         ax.set_xscale("log")
@@ -965,7 +816,7 @@ class Chinchilla_Guided_Scaling(ScalingLawGuidedOptimizer, AskFunction):
         except Exception as e:
             logger.warning(f"Failed to generate FLOPs vs Params/Data plots: {e}")
         
-        if self.strategy in ["approach1", "gemstones"]:
+        if self.strategy == "approach1":
             try:
                 fig_lc = self._plot_flops_per_objective_with_lc(trials)
                 if fig_lc is not None:
@@ -997,7 +848,7 @@ def chinchilla_guided_scaling(
     max_evaluation_flops: int,
     max_flops: int,
     benchmark_type: BenchmarkEnum,
-    strategy: Literal["approach1", "approach2", "gemstones"] = "gemstones",
+    strategy: Literal["approach1", "approach2"],
     use_priors: bool = False,
 ) -> CustomOptimizer:
         

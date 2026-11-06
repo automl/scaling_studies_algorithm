@@ -197,11 +197,9 @@ if __name__ == '__main__':
     benchmarks = [
         BenchmarkEnum.OPENCLIP.value,
         BenchmarkEnum.LLM.value,
-        BenchmarkEnum.TABPFN.value,
     ]
-    # Same target per benchmark as the cached fronts in consts.py (TABPFN always
-    # uses its own validation loss).
-    target_per_benchmark = {b: (None if b == BenchmarkEnum.TABPFN.value else target) for b in benchmarks}
+    # Same target per benchmark as the cached fronts in consts.py.
+    target_per_benchmark = {b: target for b in benchmarks}
 
     measured_points_per_benchmark = {}
     for benchmark_name in benchmarks:

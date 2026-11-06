@@ -8,17 +8,14 @@ from typing import Callable
 from enum import Enum
 import src.benchmarks.openclip_space as openclip
 import src.benchmarks.llm_space as llm
-import src.benchmarks.tabpfn_space as tabpfn
 
 class BenchmarkEnum(str, Enum):
     OPENCLIP = "openclip"
     LLM = "llm"
-    TABPFN = "tabpfn"
 
 TARGET_ENUMS = {
     BenchmarkEnum.OPENCLIP: openclip.VLMTarget,
     BenchmarkEnum.LLM: llm.LLMTarget,
-    BenchmarkEnum.TABPFN: tabpfn.TabPFNTarget,
 }
 
 
@@ -123,32 +120,6 @@ def get_benchmark(benchmark: BenchmarkEnum | str, lc_aware: bool, predictor_type
                 max_flops=max_flops,
                 min_flops=min_flops,
                 best_loss_guess=1.2,
-            )
-        case BenchmarkEnum.TABPFN:
-            bench = tabpfn.get_benchmark(predictor_type=predictor_type, target=target)if not lazy else None
-            # Space corners, from `python -m src.benchmarks.tabpfn_space`:
-            # 3.398452e+07 parameters, 3.435974e+10 data points, total flops: 6.931727e+18
-            # 1.060200e+04 parameters, 1.048576e+06 data points, total flops: 8.548727e+10
-            min_flops = 8.548727e+10
-            # Anchored on the largest Pareto-optimal point (FLOPs vs val/val_loss) of the
-            # measured data.csv, restricted to max_features=32 / num_datapoints_max=128
-            # That point is 5.582393e+15 FLOPs (loss 0.8732) and nothing improves on it up to
-            # the slice's largest measured run (1.084e+17), so it is the 20x target.
-            max_flops = 2.791197e+14  # = 5.582393e+15 / 20
-            total_eval_flops = max_flops * 10
-            return BenchmarkConfig(
-                space=tabpfn.get_pipeline_space(),
-                params_estimator=tabpfn.parameters_estimator_wrapper(bench),
-                seen_datapoints_estimator=tabpfn.seen_datapoints_estimator,
-                flops_estimator=tabpfn.flops_estimator_wrapper(bench),
-                evaluate_pipeline=tabpfn.evaluate_pipeline_wrapper(bench, lc_aware),
-                query=tabpfn.query_wrapper(bench),
-                max_evaluation_flops=total_eval_flops,
-                aspect_ratio_fn=tabpfn.aspect_ratio_fn,
-                data_parameter_name="total_cells",
-                max_flops=max_flops,
-                min_flops=min_flops,
-                best_loss_guess=0.0001,
             )
         case _:
             raise Exception("Benchmark not found")

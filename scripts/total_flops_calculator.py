@@ -13,7 +13,6 @@ sys.path.append(str(Path(__file__).parent.parent))
 from src.benchmarks.configs import BenchmarkEnum, get_benchmark, get_predictor_type, get_results_dir, set_predictor_type
 from src.benchmarks.llm_space import LLM_TARGETS
 from src.benchmarks.openclip_space import OPENCLIP_TARGETS
-from src.benchmarks.tabpfn_space import TABPFN_TARGETS
 from src.benchmarks.configs import BenchmarkEnum, get_benchmark
 def get_total_flops_for_seed(
     *,
@@ -93,7 +92,6 @@ if __name__ == "__main__":
     benchmarks = [
         BenchmarkEnum.OPENCLIP.value,
         BenchmarkEnum.LLM.value,
-        # BenchmarkEnum.TABPFN.value
         ]
 
     # Runs below this fraction of the benchmark's target budget
@@ -115,7 +113,6 @@ if __name__ == "__main__":
         targets = {
             BenchmarkEnum.LLM.value: LLM_TARGETS,
             BenchmarkEnum.OPENCLIP.value: OPENCLIP_TARGETS,
-            BenchmarkEnum.TABPFN.value: TABPFN_TARGETS,
         }
 
         for target in targets.get(benchmark_name, []):

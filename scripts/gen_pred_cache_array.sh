@@ -28,7 +28,7 @@
 
 set -euo pipefail
 
-BENCHMARKS=(tabpfn)
+BENCHMARKS=(llm openclip)
 SEEDS=(40 41 42 43 44 45 46 47 48 49 50)
 OPTIMIZERS=(chinchilla_approach1 chinchilla_approach2 random_search carbs)
 PREDS=(tabpfn)

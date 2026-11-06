@@ -128,7 +128,6 @@ if __name__ == '__main__':
     optimizers = [
         OptimizerEnum.CHINCHILLA_APPROACH1,
         # OptimizerEnum.CHINCHILLA_APPROACH2,
-        # OptimizerEnum.CHINCHILLA_GEMSTONES,
     ]
     for optimizer_name in optimizers:
         for seed in [40]:

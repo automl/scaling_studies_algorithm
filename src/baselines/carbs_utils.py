@@ -47,40 +47,6 @@ from neps.state.optimizer import BudgetInfo
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-from src.benchmarks.configs import BenchmarkEnum
-
-CENTRE_FLOPS_BUDGET_FRACTION = {BenchmarkEnum.TABPFN: 0.25}
-
-
-def _centre_within_budget(param_spaces, centre, flops_estimator, max_flops,
-                          data_parameter_name, fraction):
-    """Halve the data parameter's search centre until the centre config fits the budget."""
-    data_param = next((p for p in param_spaces if p.name == data_parameter_name), None)
-    if data_param is None:
-        return param_spaces
-
-    target = fraction * max_flops
-    probe = dict(centre)
-    lower = data_param.space.min
-    before = probe[data_parameter_name]
-    while flops_estimator(**probe) > target and probe[data_parameter_name] > lower:
-        probe[data_parameter_name] = max(lower, probe[data_parameter_name] / 2)
-
-    after = int(probe[data_parameter_name]) if data_param.space.is_integer else probe[data_parameter_name]
-    if after == before:
-        return param_spaces
-
-    logger.info(
-        f"carbs search centre: {data_parameter_name} {before:.4g} -> {after:.4g} "
-        f"(flops {flops_estimator(**centre):.3e} -> {flops_estimator(**probe):.3e}, "
-        f"target {target:.3e} = {fraction} x max_flops)"
-    )
-    return [
-        Param(name=p.name, space=p.space, search_center=after) if p.name == data_parameter_name else p
-        for p in param_spaces
-    ]
-
-
 def convert_space_to_carbs_space(space: dict[str, Any]):
     for attr_name, attr_value in space.items():
         if isinstance(attr_value, (neps.HPOInteger, neps.HPOFloat)):
@@ -717,8 +683,7 @@ def get_carbs_optimizer(space: neps.SearchSpace, seed: int,
                         evaluate_pipeline: Callable,
                         data_parameter_name,
                         root_dir,
-                        max_flops,
-                        benchmark_type=None) -> tuple[Callable[..., Any] | CustomOptimizer, CARBS]:
+                        max_flops) -> tuple[Callable[..., Any] | CustomOptimizer, CARBS]:
     space = convert_neps_to_classic_search_space(space)
     space_copy = dict(copy.deepcopy(space).searchables)
     if use_priors:
@@ -727,12 +692,6 @@ def get_carbs_optimizer(space: neps.SearchSpace, seed: int,
                 print(f"Using prior for param {name}: {param.prior}")
                 del space_copy[name]
     param_spaces = list(convert_space_to_carbs_space(space_copy))
-    fraction = CENTRE_FLOPS_BUDGET_FRACTION.get(benchmark_type)
-    if fraction is not None:
-        centre = {p.name: p.search_center for p in convert_space_to_carbs_space(dict(space.searchables))}
-        param_spaces = _centre_within_budget(
-            param_spaces, centre, flops_estimator, max_flops, data_parameter_name, fraction
-        )
     checkpoint_dir = Path(root_dir) / "checkpoints"
     carbs_params = CARBSParams(
         max_suggestion_cost=max_flops,

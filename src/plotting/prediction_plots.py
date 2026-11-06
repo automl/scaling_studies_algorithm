@@ -2656,7 +2656,6 @@ if __name__ == "__main__":
     from src.benchmarks.configs import BenchmarkEnum
     from src.benchmarks.llm_space import LLM_TARGETS
     from src.benchmarks.openclip_space import OPENCLIP_TARGETS
-    from src.benchmarks.tabpfn_space import TABPFN_TARGETS
     from src.plotting.plot_styles import BENCHMARK_TITLES
     from src.extrapolate import load_or_generate_pareto_info
     from src.loss_predictor import LossPredictorTypes
@@ -2669,9 +2668,8 @@ if __name__ == "__main__":
             all_seeds, results_dir, optimizers_dict, loss_key, target, search_space_per_benchmark, cost_estimator_per_benchmark, params_estimator_per_benchmark
     
     benchmarks = [
-        # BenchmarkEnum.OPENCLIP.value,
-        # BenchmarkEnum.LLM.value,
-        BenchmarkEnum.TABPFN.value,
+        BenchmarkEnum.OPENCLIP.value,
+        BenchmarkEnum.LLM.value,
     ]
 
 
@@ -2890,7 +2888,7 @@ if __name__ == "__main__":
 
             loss_predictors_to_compare = [p for p in LossPredictorTypes if p != LossPredictorTypes.GP_POSTERIOR]
 
-            for optimizer in ["chinchilla_approach1", "carbs", "bo_left_budget_modified_jes"]:
+            for optimizer in ["chinchilla_approach1", "carbs"]:
                 fig_loss_comp, ax_loss_comp = plot_loss_predictor_comparison_for_optimizer(
                     base_path=results_dir / benchmark_name,
                     optimizer_name=optimizer,
@@ -2911,7 +2909,7 @@ if __name__ == "__main__":
                 print(f"    ✓ Saved: {plot_output_dir / loss_comp_filename}")
 
             print(f"  Plotting n_param predictor comparison for Chinchilla A1...")
-            for optimizer in ["chinchilla_approach1", "carbs", "bo_left_budget_modified_jes"]:
+            for optimizer in ["chinchilla_approach1", "carbs"]:
                 fig_comp, ax_comp = plot_n_param_predictor_comparison_for_optimizer(
                     base_path=results_dir / benchmark_name,
                     optimizer_name=optimizer,
@@ -3023,9 +3021,8 @@ if __name__ == "__main__":
     raise Exception("")
 
     benchmarks = [
-        # BenchmarkEnum.OPENCLIP.value, 
-        # BenchmarkEnum.LLM.value,
-        BenchmarkEnum.TABPFN.value,
+        BenchmarkEnum.OPENCLIP.value,
+        BenchmarkEnum.LLM.value,
     ]
 
 

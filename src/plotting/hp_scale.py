@@ -12,15 +12,6 @@ from src.benchmarks.configs import RESULTS_BASE_DIR, BenchmarkEnum
 # The only remaining consumer of the dense grid studies; kept for HP-vs-scale plots.
 GRID_STUDY_BASE_DIR = RESULTS_BASE_DIR / "test"
 
-TABPFN_CSV_COLUMN_RENAME = {
-    "config/effective_batch_size": "config.effective_batch_size",
-    "config/lr": "config.lr",
-    "config/max_features": "config.max_features",
-    "config/model_config.embedding_size": "config.embedding_size",
-    "config/model_config.num_layers": "config.num_layers",
-    "config/num_datapoints_max": "config.num_datapoints_max",
-}
-
 def find_pareto_optimal_indices(losses, costs):
     """Find indices of Pareto optimal points (minimize both loss and costs).
     
@@ -207,38 +198,6 @@ def plot_aspect_ratio_vs_loss(aspect_ratios, losses, save_dir: Path = None):
         plt.show()
 
 
-TABPFN_MAX_FEATURES_VALUES = [32, 64, 128]
-TABPFN_NUM_DATAPOINTS_MAX_VALUES = [128, 256, 512]
-
-
-def load_tabpfn_data(data_csv_path: Path, max_features: int, num_datapoints_max: int):
-    df = pd.read_csv(data_csv_path)
-    df = df[
-        (df["config/max_features"] == max_features)
-        & (df["config/num_datapoints_max"] == num_datapoints_max)
-    ]
-    if df.empty:
-        raise ValueError(
-            f"No rows in {data_csv_path} match max_features={max_features}, "
-            f"num_datapoints_max={num_datapoints_max}"
-        )
-    df = df.rename(columns=TABPFN_CSV_COLUMN_RENAME)
-    config_cols = [c for c in df.columns if c.startswith("config.")]
-
-    losses = defaultdict(list)
-    costs = []
-    confs = []
-    params = []
-    datapoints = []
-    for _, row in df.iterrows():
-        losses["val_loss"].append(float(row["val/val_loss"]))
-        costs.append(float(row["total_flops"]))
-        confs.append({col: row[col] for col in config_cols})
-        params.append(float(row["parameters"]))
-        datapoints.append(float(row["total_cells"]))
-    return losses, costs, confs, params, datapoints
-
-
 def load_neps_data(path: Path, targets):
     losses = defaultdict(list)
     costs = []
@@ -331,16 +290,7 @@ def run_hp_scale_analysis(bench_name: str, targets, save_dir: Path, losses, cost
 
     hps = all_confs[0].keys()
     print(hps)
-    if bench_name == BenchmarkEnum.TABPFN.value:
-        assert "config.embedding_size" in hps
-        assert "config.num_layers" in hps
-        embedding_size_values = [conf["config.embedding_size"] for conf in all_confs]
-        num_layers_values = [conf["config.num_layers"] for conf in all_confs]
-        ratios = [embedding_size / num_layers for embedding_size, num_layers in zip(embedding_size_values, num_layers_values)]
-        r_ratios = [embedding_size **2 / num_layers for embedding_size, num_layers in zip(embedding_size_values, num_layers_values)]
-        plot_hp_scale(ratios, all_losses, all_costs, all_params, hp_name="embedding-size-depth-ratio", save_dir=save_dir, pareto_indices=pareto_indices)
-        plot_hp_scale(r_ratios, all_losses, all_costs, all_params, hp_name="embedding-size^2-depth-ratio", save_dir=save_dir, pareto_indices=pareto_indices)
-    elif bench_name == BenchmarkEnum.LLM.value:
+    if bench_name == BenchmarkEnum.LLM.value:
         assert "config.d_model" in hps
         assert "config.n_layers" in hps
         d_model_values = [conf["config.d_model"] for conf in all_confs]
@@ -370,30 +320,18 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Plot hyperparameter scaling and Pareto fronts from benchmark results")
     parser.add_argument("--bench", type=str, required=True, choices=[b.value for b in BenchmarkEnum], help="e.g., llm or openclip")
-    parser.add_argument("--data-csv", type=str, default="scripts/data.csv", help="Path to the aggregated data.csv used for the TABPFN benchmark")
     args = parser.parse_args()
     bench_name = args.bench
     bench = BenchmarkEnum(bench_name)
 
-    if bench == BenchmarkEnum.TABPFN:
-        data_csv_path = Path(args.data_csv)
-        for max_features in TABPFN_MAX_FEATURES_VALUES:
-            for num_datapoints_max in TABPFN_NUM_DATAPOINTS_MAX_VALUES:
-                print(f"=== max_features={max_features}, num_datapoints_max={num_datapoints_max} ===")
-                losses, costs, confs, params, datapoints = load_tabpfn_data(
-                    data_csv_path, max_features, num_datapoints_max
-                )
-                save_dir = data_csv_path.parent / f"plotting_tabpfn_mf{max_features}_ndp{num_datapoints_max}"
-                run_hp_scale_analysis(bench_name, ["val_loss"], save_dir, losses, costs, confs, params, datapoints)
-    else:
-        pathes = {
-            BenchmarkEnum.OPENCLIP: GRID_STUDY_BASE_DIR / "openclip" / "grid_search",
-            BenchmarkEnum.LLM: GRID_STUDY_BASE_DIR / "llm" / "grid_search",
-        }
-        from scan_bench import LLMTarget, VLMTarget
-        targets_per_bench = {BenchmarkEnum.LLM: LLM_TARGETS, BenchmarkEnum.OPENCLIP: VLMTarget.all()}
-        targets = targets_per_bench[bench]
-        path = pathes[bench]
-        losses, costs, confs, params, datapoints = load_neps_data(path, targets)
-        save_dir = path / "plotting"
-        run_hp_scale_analysis(bench_name, targets, save_dir, losses, costs, confs, params, datapoints)
+    pathes = {
+        BenchmarkEnum.OPENCLIP: GRID_STUDY_BASE_DIR / "openclip" / "grid_search",
+        BenchmarkEnum.LLM: GRID_STUDY_BASE_DIR / "llm" / "grid_search",
+    }
+    from scan_bench import LLMTarget, VLMTarget
+    targets_per_bench = {BenchmarkEnum.LLM: LLM_TARGETS, BenchmarkEnum.OPENCLIP: VLMTarget.all()}
+    targets = targets_per_bench[bench]
+    path = pathes[bench]
+    losses, costs, confs, params, datapoints = load_neps_data(path, targets)
+    save_dir = path / "plotting"
+    run_hp_scale_analysis(bench_name, targets, save_dir, losses, costs, confs, params, datapoints)

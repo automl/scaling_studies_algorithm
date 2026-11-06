@@ -43,17 +43,14 @@ if __name__ == '__main__':
     results_dir = get_results_dir(predictor_type)
 
     optimizers = [
-        # OptimizerEnum.BO_SPACE_EXPANSION,
-        # OptimizerEnum.BO_LEFT_BUDGET,
         OptimizerEnum.CHINCHILLA_APPROACH1, 
         OptimizerEnum.CHINCHILLA_APPROACH2,
-        # OptimizerEnum.CHINCHILLA_GEMSTONES, 
         OptimizerEnum.RANDOM_SEARCH,
         OptimizerEnum.CARBS,
         ] if args.optimizer == "" else [OptimizerEnum(args.optimizer)]
 
     for optimizer_name in optimizers:
-        lc_aware = optimizer_name in [OptimizerEnum.CHINCHILLA_APPROACH1.value, OptimizerEnum.CHINCHILLA_GEMSTONES.value]
+        lc_aware = optimizer_name == OptimizerEnum.CHINCHILLA_APPROACH1
         benchmark = get_benchmark(BenchmarkEnum(args.benchmark), lc_aware=lc_aware, predictor_type=predictor_type)
         get_optimizer = get_optimizer_wrapper(
             pipeline_space=benchmark.space,
