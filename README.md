@@ -84,11 +84,12 @@ that rankings are not surrogate-specific, rerun with another `--pred` (`ensemble
 
 ```bibtex
 @inproceedings{sermaxhaj2026scanbench,
-title = {{ScAn-Bench}: Evaluating Scaling Analysis Methodology},
-author = {Artin Sermaxhaj and Nastaran Alipour and Donat Sinani and Johannes Hog and Neeratyoy Mallik and Steven Adriaensen and Jenia Jitsev and Danny Stoll},
-year = {2026},
-booktitle = {Fortieth Conference on Neural Information Processing Systems (NeurIPS 2026)},
-keywords = {}
+  title={ScAn-Bench: Evaluating Scaling Analysis Methodology},
+  author={A. Sermaxhaj and N. Alipour and D. Sinani and J. Hog and N. Mallik and S. Adriaensen and J. Jitsev and D. Stoll},
+  booktitle={Advances in Neural Information Processing Systems},
+  year={2026},
+  note={Evaluations and Datasets Track},
+  url={https://arxiv.org/abs/2609.35707}
 }
 ```
 
